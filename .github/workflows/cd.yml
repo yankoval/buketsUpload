@@ -14,12 +14,12 @@ on:
 
 env:
   FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
-  DEPLOY_SA_ID: ${{ secrets.YC_DEPLOY_SA_ID }}
+  DEPLOY_SA_ID: ${{ secrets.YC_DEPLOY_SA_ID }} # aje3k28skhmb9e8eev6q (через Federation)
   FUNCTION_NAME: bukupl
   FUNCTION_RUNTIME: python312
   FUNCTION_ENTRYPOINT: index.handler
   FUNCTION_MEMORY: "128Mb"
-  EXECUTION_SA_ID: ${{ secrets.YC_EXECUTION_SA_ID }}
+  EXECUTION_SA_ID: ${{ secrets.YC_EXECUTION_SA_ID }} # aje6tbttepr0ubr1aqdj
   BUCKET_NAME: ${{ secrets.YC_BUCKET_NAME }}
 
 jobs:
