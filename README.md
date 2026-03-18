@@ -25,16 +25,13 @@ Get presigned links to bukets upload and get list of bukets to download.
 
 ---
 
-### Решение проблем (Ошибка 401 при обмене токена)
+### Решение проблем
 
-Если GitHub Action завершается с ошибкой `401: Request failed`, проверьте настройки в Yandex Cloud:
-
-1.  **Настройки Федерации (`ajerpra4fh6o6p6kqe9e`)**:
-    *   **Issuer (Эмитент)**: должен быть `https://token.actions.githubusercontent.com`.
-    *   **Audiences**: должен содержать URL вашего репозитория `https://github.com/<OWNER>/<REPO>`.
-
-2.  **Права доступа**:
-    *   У сервисного аккаунта `aje3k28skhmb9e8eev6q` должна быть роль `iam.workloadIdentityUser` для федерации `ajerpra4fh6o6p6kqe9e`.
+#### 1. Ошибка 401 (AxiosError: Request failed) при обмене токена
+Проверьте настройки федерации `ajerpra4fh6o6p6kqe9e`:
+*   **Issuer (Эмитент)**: должен быть `https://token.actions.githubusercontent.com`.
+*   **Audiences**: должен содержать URL репозитория `https://github.com/<OWNER>/<REPO>`.
+*   **Права доступа**: Аккаунту `aje3k28skhmb9e8eev6q` нужна роль `iam.workloadIdentityUser`.
 
 **Команда для предоставления прав (через YC CLI):**
 ```bash
@@ -42,4 +39,14 @@ yc iam service-account add-access-binding aje3k28skhmb9e8eev6q \
     --role iam.workloadIdentityUser \
     --subject federation:ajerpra4fh6o6p6kqe9e:repo:<OWNER>/<REPO>:ref:refs/heads/main
 ```
-*(Замените `<OWNER>/<REPO>` на путь к вашему репозиторию в GitHub)*.
+
+#### 2. Ошибка "Service account is not available"
+Если деплой падает с этой ошибкой при создании версии, значит аккаунт деплоя (`aje3k28skhmb9e8eev6q`) не имеет прав на использование аккаунта выполнения (`aje6tbttepr0ubr1aqdj`).
+
+**Команда для исправления (через YC CLI):**
+```bash
+yc iam service-account add-access-binding aje6tbttepr0ubr1aqdj \
+    --role iam.serviceAccounts.user \
+    --subject serviceAccount:aje3k28skhmb9e8eev6q
+```
+*(Это позволит аккаунту деплоя назначать аккаунт выполнения на создаваемую функцию).*
