@@ -1,0 +1,47 @@
+name: Deploy Yandex Cloud Function
+
+permissions:
+  id-token: write # Необходимо для Workload Identity Federation
+  contents: read  # Необходимо для actions/checkout
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+  workflow_dispatch:
+
+env:
+  FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+  DEPLOY_SA_ID: ${{ secrets.YC_DEPLOY_SA_ID }}
+  FUNCTION_NAME: bukupl
+  FUNCTION_RUNTIME: python312
+  FUNCTION_ENTRYPOINT: index.handler
+  FUNCTION_MEMORY: "128Mb"
+  EXECUTION_SA_ID: ${{ secrets.YC_EXECUTION_SA_ID }}
+  BUCKET_NAME: ${{ secrets.YC_BUCKET_NAME }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Function
+        id: sls-func
+        uses: yc-actions/yc-sls-function@v3.1.0
+        with:
+          yc-sa-id: ${{ env.DEPLOY_SA_ID }}
+          folder-id: ${{ env.FOLDER_ID }}
+          function-name: ${{ env.FUNCTION_NAME }}
+          runtime: ${{ env.FUNCTION_RUNTIME }}
+          entrypoint: ${{ env.FUNCTION_ENTRYPOINT }}
+          memory: ${{ env.FUNCTION_MEMORY }}
+          service-account: ${{ env.EXECUTION_SA_ID }}
+          environment: |
+            BUCKET_NAME=${{ env.BUCKET_NAME }}
+          include: |
+            index.py
+            requirements.txt
