@@ -59,7 +59,11 @@ def handler(event, context):
             file_name = query_params['download']
             url = s3_client.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': bucket, 'Key': file_name},
+                Params={
+                    'Bucket': bucket,
+                    'Key': file_name,
+                    'ResponseContentDisposition': f'attachment; filename="{file_name}"'
+                },
                 ExpiresIn=3600
             )
             return {
@@ -69,11 +73,9 @@ def handler(event, context):
             }
 
         # 3. Default: Generate upload URL
-        file_name = f"{uuid.uuid4()}.pdf"
+        file_name = str(uuid.uuid4())
         if event.get('body'):
             try:
-                # event['body'] might be base64 encoded if it's a binary request,
-                # but here we expect JSON for file_name
                 body_str = event['body']
                 if event.get('isBase64Encoded'):
                     import base64
