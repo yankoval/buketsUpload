@@ -83,10 +83,6 @@ def handler(event, context):
         # 2. Get download URL
         if 'download' in query_params:
             file_name = query_params['download']
-            # If the user provides just the filename and it doesn't already
-            # contain the folder, we prepend it.
-            # But usually for downloads, the full Key is provided.
-            # Let's ensure we use the provided filename as the Key.
             key = file_name
 
             url = s3_client.generate_presigned_url(
@@ -105,6 +101,23 @@ def handler(event, context):
             }
 
         # 3. Default: Generate upload URL
+        # Check if the folder exists if one is provided
+        if prefix:
+            # We check if there's any object starting with this prefix.
+            # In S3, "folders" exist as prefixes.
+            # If the user wants to upload to 'docs/', we check if 'docs/' exists.
+            check_response = s3_client.list_objects_v2(
+                Bucket=bucket,
+                Prefix=prefix,
+                MaxKeys=1
+            )
+            if 'Contents' not in check_response and 'CommonPrefixes' not in check_response:
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps({'error': f"Folder '{folder}' does not exist. Upload denied."})
+                }
+
         raw_file_name = str(uuid.uuid4())
         if event.get('body'):
             try:
