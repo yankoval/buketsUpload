@@ -20,31 +20,7 @@ def handler(event, context):
 
     bucket = os.getenv('BUCKET_NAME')
     query_params = event.get('queryStringParameters') or {}
-
-    # Extract folder from query params or request body
-    folder = query_params.get('folder', '')
-    file_name = None
     
-    if event.get('body'):
-        try:
-            body_str = event['body']
-            if event.get('isBase64Encoded'):
-                import base64
-                body_str = base64.b64decode(body_str).decode('utf-8')
-
-            body = json.loads(body_str)
-            folder = body.get('folder', folder)
-            file_name = body.get('file_name')
-        except:
-            pass
-
-    # Normalize folder prefix:
-    # 1. Strip leading slashes
-    # 2. Ensure trailing slash if not empty
-    prefix = folder.lstrip('/')
-    if prefix and not prefix.endswith('/'):
-        prefix += '/'
-
     headers = {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
@@ -60,7 +36,38 @@ def handler(event, context):
             'body': ''
         }
 
+    if not bucket:
+        return {
+            'statusCode': 500,
+            'headers': headers,
+            'body': json.dumps({'error': "BUCKET_NAME environment variable is not set."})
+        }
+
     try:
+        # Extract parameters from query string and body
+        folder = query_params.get('folder', '')
+        file_name = None
+
+        if event.get('body'):
+            try:
+                body_str = event['body']
+                if event.get('isBase64Encoded'):
+                    import base64
+                    body_str = base64.b64decode(body_str).decode('utf-8')
+
+                body = json.loads(body_str)
+                folder = body.get('folder', folder)
+                file_name = body.get('file_name')
+            except:
+                pass
+
+        # Normalize folder prefix:
+        # 1. Strip leading slashes
+        # 2. Ensure trailing slash if not empty
+        prefix = str(folder or '').lstrip('/')
+        if prefix and not prefix.endswith('/'):
+            prefix += '/'
+
         # 1. List files and subfolders
         if 'list' in query_params:
             response = s3_client.list_objects_v2(
@@ -124,13 +131,14 @@ def handler(event, context):
                 return {
                     'statusCode': 400,
                     'headers': headers,
-                    'body': json.dumps({'error': f"Folder '{folder}' does not exist. Upload denied."})
+                    'body': json.dumps({
+                        'error': f"Folder '{folder}' (normalized to '{prefix}') does not exist in bucket '{bucket}'. Upload denied.",
+                        'hint': "Ensure the folder exists and you have provided the correct name."
+                    })
                 }
 
         # Determine final key
-        final_file_name = file_name or str(uuid.uuid4())
-        # Strip any leading slashes from the filename to avoid //
-        final_file_name = final_file_name.lstrip('/')
+        final_file_name = str(file_name or uuid.uuid4()).lstrip('/')
 
         # Prepend prefix if not already part of the filename
         key = final_file_name
