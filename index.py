@@ -20,7 +20,13 @@ def handler(event, context):
 
     bucket = os.getenv('BUCKET_NAME')
     query_params = event.get('queryStringParameters') or {}
+    folder = query_params.get('folder', '')
     
+    # Normalize folder prefix: empty stays empty, non-empty must end with /
+    prefix = folder
+    if prefix and not prefix.endswith('/'):
+        prefix += '/'
+
     headers = {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
@@ -37,32 +43,58 @@ def handler(event, context):
         }
 
     try:
-        # 1. List files
+        # 1. List files and subfolders
         if 'list' in query_params:
-            response = s3_client.list_objects_v2(Bucket=bucket)
-            files = []
+            response = s3_client.list_objects_v2(
+                Bucket=bucket,
+                Prefix=prefix,
+                Delimiter='/'
+            )
+
+            items = []
+
+            # Add folders (CommonPrefixes)
+            if 'CommonPrefixes' in response:
+                for cp in response['CommonPrefixes']:
+                    items.append({
+                        'name': cp['Prefix'],
+                        'type': 'folder'
+                    })
+
+            # Add files (Contents)
             if 'Contents' in response:
                 for obj in response['Contents']:
-                    files.append({
+                    # S3 includes the prefix itself if it's an object, skip it
+                    if obj['Key'] == prefix:
+                        continue
+                    items.append({
                         'name': obj['Key'],
+                        'type': 'file',
                         'size': obj['Size'],
                         'last_modified': obj['LastModified']
                     })
+
             return {
                 'statusCode': 200,
                 'headers': headers,
-                'body': json.dumps(files, default=datetime_handler)
+                'body': json.dumps(items, default=datetime_handler)
             }
 
         # 2. Get download URL
         if 'download' in query_params:
             file_name = query_params['download']
+            # If the user provides just the filename and it doesn't already
+            # contain the folder, we prepend it.
+            # But usually for downloads, the full Key is provided.
+            # Let's ensure we use the provided filename as the Key.
+            key = file_name
+
             url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={
                     'Bucket': bucket,
-                    'Key': file_name,
-                    'ResponseContentDisposition': f'attachment; filename="{file_name}"'
+                    'Key': key,
+                    'ResponseContentDisposition': f'attachment; filename="{os.path.basename(key)}"'
                 },
                 ExpiresIn=3600
             )
@@ -73,7 +105,7 @@ def handler(event, context):
             }
 
         # 3. Default: Generate upload URL
-        file_name = str(uuid.uuid4())
+        raw_file_name = str(uuid.uuid4())
         if event.get('body'):
             try:
                 body_str = event['body']
@@ -82,19 +114,24 @@ def handler(event, context):
                     body_str = base64.b64decode(body_str).decode('utf-8')
 
                 body = json.loads(body_str)
-                file_name = body.get('file_name', file_name)
+                raw_file_name = body.get('file_name', raw_file_name)
             except:
                 pass
 
+        # Prepend prefix for upload if not already present
+        key = raw_file_name
+        if prefix and not key.startswith(prefix):
+            key = prefix + key
+
         url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': bucket, 'Key': file_name},
+            Params={'Bucket': bucket, 'Key': key},
             ExpiresIn=3600
         )
         return {
             'statusCode': 200,
             'headers': headers,
-            'body': json.dumps({'upload_url': url, 'key': file_name})
+            'body': json.dumps({'upload_url': url, 'key': key})
         }
 
     except Exception as e:

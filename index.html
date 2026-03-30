@@ -3,26 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Bucket Browser</title>
+    <title>Bucket File Browser</title>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
+        body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
         h1 { color: #333; }
+        .breadcrumb { margin-bottom: 1rem; font-size: 1.1rem; }
+        .breadcrumb a { text-decoration: none; color: #0066cc; }
+        .breadcrumb a:hover { text-decoration: underline; }
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
         th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
         tr:hover { background-color: #f5f5f5; }
+        .folder-link { cursor: pointer; color: #0066cc; font-weight: bold; text-decoration: none; }
         .download-btn { cursor: pointer; color: #0066cc; text-decoration: underline; background: none; border: none; padding: 0; font: inherit; }
         .loading { font-style: italic; color: #666; }
         .error { color: #cc0000; font-weight: bold; }
         .size { color: #666; font-size: 0.9rem; }
+        .icon { margin-right: 8px; }
     </style>
 </head>
 <body>
-    <h1>Bucket Files</h1>
+    <h1>Bucket Browser</h1>
+
+    <div id="breadcrumb" class="breadcrumb"></div>
     <div id="status"></div>
+
     <table id="file-table" style="display:none;">
         <thead>
             <tr>
-                <th>File Name</th>
+                <th>Name</th>
                 <th>Size</th>
                 <th>Last Modified</th>
                 <th>Action</th>
@@ -34,45 +42,100 @@
     <script>
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
 
-        async function fetchFiles() {
+        // Get folder from URL parameter
+        function getCurrentFolder() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('folder') || '';
+        }
+
+        function updateBreadcrumb(folder) {
+            const breadcrumb = document.getElementById('breadcrumb');
+            let html = '<a href="?">Root</a>';
+
+            if (folder) {
+                const parts = folder.split('/').filter(p => p);
+                let path = '';
+                parts.forEach((part, index) => {
+                    path += part + '/';
+                    html += ` / <a href="?folder=${encodeURIComponent(path)}">${part}</a>`;
+                });
+            }
+            breadcrumb.innerHTML = html;
+        }
+
+        async function fetchItems() {
+            const currentFolder = getCurrentFolder();
+            updateBreadcrumb(currentFolder);
+
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
             const tbody = document.getElementById('file-list');
 
             statusDiv.className = 'loading';
-            statusDiv.textContent = 'Loading file list...';
+            statusDiv.textContent = 'Loading items...';
+            table.style.display = 'none';
 
             try {
-                const response = await fetch(`${API_URL}?list=true`);
+                let url = `${API_URL}?list=true`;
+                if (currentFolder) {
+                    url += `&folder=${encodeURIComponent(currentFolder)}`;
+                }
+
+                const response = await fetch(url);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-                const files = await response.json();
+                const items = await response.json();
 
-                if (files.length === 0) {
+                tbody.innerHTML = '';
+
+                // Handle Parent directory if not in root
+                if (currentFolder) {
+                    const parentFolder = currentFolder.split('/').filter(p => p).slice(0, -1).join('/') + (currentFolder.includes('/') && currentFolder.split('/').filter(p => p).length > 1 ? '/' : '');
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td colspan="4">
+                            <a class="folder-link" href="?folder=${encodeURIComponent(parentFolder)}">
+                                <span class="icon">📁</span>.. (Parent Directory)
+                            </a>
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                }
+
+                if (items.length === 0 && !currentFolder) {
                     statusDiv.textContent = 'Bucket is empty.';
                     return;
                 }
 
-                tbody.innerHTML = '';
-                files.forEach(file => {
+                items.forEach(item => {
                     const row = document.createElement('tr');
 
                     const nameCell = document.createElement('td');
-                    nameCell.textContent = file.name;
+                    if (item.type === 'folder') {
+                        const link = document.createElement('a');
+                        link.className = 'folder-link';
+                        link.href = `?folder=${encodeURIComponent(item.name)}`;
+                        link.innerHTML = `<span class="icon">📁</span>${item.name.replace(currentFolder, '')}`;
+                        nameCell.appendChild(link);
+                    } else {
+                        nameCell.innerHTML = `<span class="icon">📄</span>${item.name.replace(currentFolder, '')}`;
+                    }
 
                     const sizeCell = document.createElement('td');
                     sizeCell.className = 'size';
-                    sizeCell.textContent = formatBytes(file.size);
+                    sizeCell.textContent = item.type === 'file' ? formatBytes(item.size) : '-';
 
                     const dateCell = document.createElement('td');
-                    dateCell.textContent = new Date(file.last_modified).toLocaleString();
+                    dateCell.textContent = item.type === 'file' ? new Date(item.last_modified).toLocaleString() : '-';
 
                     const actionCell = document.createElement('td');
-                    const btn = document.createElement('button');
-                    btn.className = 'download-btn';
-                    btn.textContent = 'Download';
-                    btn.onclick = () => downloadFile(file.name);
-                    actionCell.appendChild(btn);
+                    if (item.type === 'file') {
+                        const btn = document.createElement('button');
+                        btn.className = 'download-btn';
+                        btn.textContent = 'Download';
+                        btn.onclick = () => downloadFile(item.name);
+                        actionCell.appendChild(btn);
+                    }
 
                     row.appendChild(nameCell);
                     row.appendChild(sizeCell);
@@ -86,7 +149,7 @@
             } catch (error) {
                 console.error('Fetch error:', error);
                 statusDiv.className = 'error';
-                statusDiv.textContent = `Error loading files: ${error.message}`;
+                statusDiv.textContent = `Error loading items: ${error.message}`;
             }
         }
 
@@ -116,7 +179,8 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
         }
 
-        fetchFiles();
+        window.onpopstate = () => fetchItems();
+        fetchItems();
     </script>
 </body>
 </html>
