@@ -20,10 +20,28 @@ def handler(event, context):
 
     bucket = os.getenv('BUCKET_NAME')
     query_params = event.get('queryStringParameters') or {}
+
+    # Extract folder from query params or request body
     folder = query_params.get('folder', '')
+    file_name = None
     
-    # Normalize folder prefix: empty stays empty, non-empty must end with /
-    prefix = folder
+    if event.get('body'):
+        try:
+            body_str = event['body']
+            if event.get('isBase64Encoded'):
+                import base64
+                body_str = base64.b64decode(body_str).decode('utf-8')
+
+            body = json.loads(body_str)
+            folder = body.get('folder', folder)
+            file_name = body.get('file_name')
+        except:
+            pass
+
+    # Normalize folder prefix:
+    # 1. Strip leading slashes
+    # 2. Ensure trailing slash if not empty
+    prefix = folder.lstrip('/')
     if prefix and not prefix.endswith('/'):
         prefix += '/'
 
@@ -52,8 +70,6 @@ def handler(event, context):
             )
 
             items = []
-
-            # Add folders (CommonPrefixes)
             if 'CommonPrefixes' in response:
                 for cp in response['CommonPrefixes']:
                     items.append({
@@ -61,10 +77,8 @@ def handler(event, context):
                         'type': 'folder'
                     })
 
-            # Add files (Contents)
             if 'Contents' in response:
                 for obj in response['Contents']:
-                    # S3 includes the prefix itself if it's an object, skip it
                     if obj['Key'] == prefix:
                         continue
                     items.append({
@@ -82,9 +96,7 @@ def handler(event, context):
 
         # 2. Get download URL
         if 'download' in query_params:
-            file_name = query_params['download']
-            key = file_name
-
+            key = query_params['download']
             url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={
@@ -101,11 +113,8 @@ def handler(event, context):
             }
 
         # 3. Default: Generate upload URL
-        # Check if the folder exists if one is provided
+        # Check folder existence if provided
         if prefix:
-            # We check if there's any object starting with this prefix.
-            # In S3, "folders" exist as prefixes.
-            # If the user wants to upload to 'docs/', we check if 'docs/' exists.
             check_response = s3_client.list_objects_v2(
                 Bucket=bucket,
                 Prefix=prefix,
@@ -118,21 +127,13 @@ def handler(event, context):
                     'body': json.dumps({'error': f"Folder '{folder}' does not exist. Upload denied."})
                 }
 
-        raw_file_name = str(uuid.uuid4())
-        if event.get('body'):
-            try:
-                body_str = event['body']
-                if event.get('isBase64Encoded'):
-                    import base64
-                    body_str = base64.b64decode(body_str).decode('utf-8')
+        # Determine final key
+        final_file_name = file_name or str(uuid.uuid4())
+        # Strip any leading slashes from the filename to avoid //
+        final_file_name = final_file_name.lstrip('/')
 
-                body = json.loads(body_str)
-                raw_file_name = body.get('file_name', raw_file_name)
-            except:
-                pass
-
-        # Prepend prefix for upload if not already present
-        key = raw_file_name
+        # Prepend prefix if not already part of the filename
+        key = final_file_name
         if prefix and not key.startswith(prefix):
             key = prefix + key
 
