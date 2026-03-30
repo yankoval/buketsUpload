@@ -27,3 +27,91 @@ Get presigned links to bukets upload and get list of bukets to download.
 
 *   **Имя функции**: `bukupl`
 *   **Среда выполнения**: Python 3.12 (настроено в `.github/workflows/cd.yml`)
+*   **URL функции**: `https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19`
+
+## Примеры использования (Usage Examples)
+
+Все примеры используют URL: `https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19`
+
+### 1. Получение списка файлов и папок (List)
+
+#### cURL
+```bash
+# Корень
+curl "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19?list=true"
+
+# Конкретная папка
+curl "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19?list=true&folder=myfolder/"
+```
+
+#### Python
+```python
+import requests
+
+url = "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19"
+params = {"list": "true", "folder": "docs/"}
+response = requests.get(url, params=params)
+print(response.json())
+```
+
+### 2. Скачивание файла (Download)
+
+#### cURL
+```bash
+# 1. Получаем подписанную ссылку
+DOWNLOAD_URL=$(curl -s "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19?download=docs/file.pdf" | jq -r .download_url)
+
+# 2. Скачиваем файл
+curl -L -o "downloaded_file.pdf" "$DOWNLOAD_URL"
+```
+
+#### Python
+```python
+import requests
+
+url = "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19"
+# Получаем ссылку
+response = requests.get(url, params={"download": "docs/file.pdf"})
+download_url = response.json()["download_url"]
+
+# Скачиваем
+file_data = requests.get(download_url)
+with open("downloaded_file.pdf", "wb") as f:
+    f.write(file_data.content)
+```
+
+### 3. Загрузка файла (Upload)
+
+*Примечание: Загрузка в папку разрешена только если папка уже существует.*
+
+#### cURL
+```bash
+# 1. Получаем ссылку для загрузки (передаем имя файла и папку в теле JSON)
+UPLOAD_INFO=$(curl -s -X POST "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19" \
+     -H "Content-Type: application/json" \
+     -d '{"file_name": "test.txt", "folder": "uploads/"}')
+
+UPLOAD_URL=$(echo $UPLOAD_INFO | jq -r .upload_url)
+
+# 2. Загружаем файл
+curl -X PUT -T "local_file.txt" "$UPLOAD_URL"
+```
+
+#### Python
+```python
+import requests
+
+url = "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19"
+# 1. Получаем ссылку
+payload = {"file_name": "test.txt", "folder": "uploads/"}
+response = requests.post(url, json=payload)
+upload_url = response.json()["upload_url"]
+
+# 2. Загружаем
+with open("local_file.txt", "rb") as f:
+    requests.put(upload_url, data=f)
+```
+
+## Веб-интерфейс (Browsing)
+
+В репозитории есть файл `index.html`, который можно использовать как образец для создания веб-интерфейса. Он позволяет просматривать содержимое бакета, перемещаться по папкам и скачивать файлы в один клик.
