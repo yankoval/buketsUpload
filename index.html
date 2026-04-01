@@ -58,6 +58,40 @@
         }
         .upload-section button:hover { background: #45a049; }
         .upload-section button:disabled { background: #ccc; cursor: not-allowed; }
+
+        .filter-section {
+            background: #f1f8e9;
+            padding: 1rem;
+            border: 1px solid #c5e1a5;
+            border-radius: 4px;
+            margin-bottom: 1.5rem;
+        }
+        .filter-chip {
+            display: inline-flex;
+            align-items: center;
+            background: #fff;
+            border: 1px solid #8bc34a;
+            color: #33691e;
+            padding: 4px 10px;
+            border-radius: 16px;
+            font-size: 0.9rem;
+            margin: 4px;
+            cursor: default;
+        }
+        .remove-filter-btn {
+            cursor: pointer;
+            margin-left: 8px;
+            color: #7cb342;
+            font-weight: bold;
+            border: none;
+            background: none;
+            padding: 0;
+            font-size: 1rem;
+        }
+        .filter-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+        .filter-header h3 { margin: 0; }
+        .clickable-tag { cursor: pointer; border: 1px solid transparent; transition: border 0.2s; }
+        .clickable-tag:hover { border-color: #0288d1; }
     </style>
 </head>
 <body>
@@ -68,6 +102,15 @@
         <input type="file" id="file-input">
         <button id="upload-btn" onclick="uploadFile()">Upload</button>
         <div id="upload-status"></div>
+    </div>
+
+    <div class="filter-section" id="filter-section" style="display:none;">
+        <div class="filter-header">
+            <h3>Active Filters</h3>
+            <button onclick="clearFilters()" style="font-size: 0.8rem;">Clear All</button>
+        </div>
+        <div id="active-filters"></div>
+        <small style="color: #666;">Click on a tag in the table to filter by it.</small>
     </div>
 
     <div id="breadcrumb" class="breadcrumb"></div>
@@ -89,6 +132,7 @@
     <script>
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
         let allowedTags = ['error', 'finished'];
+        let activeFilters = {}; // { key: [values] }
 
         let configLoaded = false;
         async function fetchConfig() {
@@ -110,6 +154,80 @@
             } catch (e) {
                 console.error("Failed to fetch UI-conf.json, using defaults", e);
             }
+        }
+
+        function loadFilters() {
+            const folder = getCurrentFolder();
+            const saved = localStorage.getItem(`filters_${folder}`);
+            if (saved) {
+                try {
+                    activeFilters = JSON.parse(saved);
+                } catch (e) {
+                    activeFilters = {};
+                }
+            } else {
+                activeFilters = {};
+            }
+            updateFilterUI();
+        }
+
+        function saveFilters() {
+            const folder = getCurrentFolder();
+            localStorage.setItem(`filters_${folder}`, JSON.stringify(activeFilters));
+            updateFilterUI();
+        }
+
+        function updateFilterUI() {
+            const section = document.getElementById('filter-section');
+            const container = document.getElementById('active-filters');
+            container.innerHTML = '';
+
+            const keys = Object.keys(activeFilters);
+            if (keys.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            keys.forEach(key => {
+                activeFilters[key].forEach(val => {
+                    const chip = document.createElement('div');
+                    chip.className = 'filter-chip';
+                    chip.innerHTML = `<strong>${key}:</strong> ${val}`;
+
+                    const btn = document.createElement('button');
+                    btn.className = 'remove-filter-btn';
+                    btn.innerHTML = '&times;';
+                    btn.onclick = () => removeFilter(key, val);
+
+                    chip.appendChild(btn);
+                    container.appendChild(chip);
+                });
+            });
+        }
+
+        function addFilter(key, value) {
+            if (!activeFilters[key]) activeFilters[key] = [];
+            if (!activeFilters[key].includes(value)) {
+                activeFilters[key].push(value);
+                saveFilters();
+                fetchItems();
+            }
+        }
+
+        function removeFilter(key, value) {
+            if (activeFilters[key]) {
+                activeFilters[key] = activeFilters[key].filter(v => v !== value);
+                if (activeFilters[key].length === 0) delete activeFilters[key];
+                saveFilters();
+                fetchItems();
+            }
+        }
+
+        function clearFilters() {
+            activeFilters = {};
+            saveFilters();
+            fetchItems();
         }
 
         // Get folder from URL hash
@@ -138,6 +256,7 @@
             const currentFolder = getCurrentFolder();
             updateBreadcrumb(currentFolder);
             await fetchConfig();
+            loadFilters();
 
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
@@ -156,7 +275,22 @@
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-                const items = await response.json();
+                let items = await response.json();
+
+                // Apply Filters
+                const filterKeys = Object.keys(activeFilters);
+                if (filterKeys.length > 0) {
+                    items = items.filter(item => {
+                        if (item.type !== 'file') return true;
+                        if (!item.tags) return false;
+
+                        return filterKeys.every(fk => {
+                            const itemTagValue = item.tags[fk];
+                            if (!itemTagValue) return false;
+                            return activeFilters[fk].includes(itemTagValue);
+                        });
+                    });
+                }
 
                 tbody.innerHTML = '';
 
@@ -204,8 +338,9 @@
                     if (item.type === 'file' && item.tags) {
                         Object.entries(item.tags).forEach(([key, value]) => {
                             const tagSpan = document.createElement('span');
-                            tagSpan.className = 'tag';
+                            tagSpan.className = 'tag clickable-tag';
                             tagSpan.textContent = `${key}: ${value}`;
+                            tagSpan.onclick = () => addFilter(key, value);
 
                             const k = String(key).trim().toLowerCase();
                             const v = String(value).trim().toLowerCase();
