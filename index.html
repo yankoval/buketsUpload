@@ -19,10 +19,54 @@
         .error { color: #cc0000; font-weight: bold; }
         .size { color: #666; font-size: 0.9rem; }
         .icon { margin-right: 8px; }
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            background: #e1f5fe;
+            color: #01579b;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-right: 4px;
+        }
+        .remove-tag-btn {
+            cursor: pointer;
+            margin-left: 4px;
+            color: #d32f2f;
+            font-weight: bold;
+            border: none;
+            background: none;
+            padding: 0;
+        }
+        .upload-section {
+            background: #f9f9f9;
+            padding: 1rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 1.5rem;
+        }
+        .upload-section input[type="file"] { margin-bottom: 10px; }
+        .upload-section button {
+            background: #4caf50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .upload-section button:hover { background: #45a049; }
+        .upload-section button:disabled { background: #ccc; cursor: not-allowed; }
     </style>
 </head>
 <body>
     <h1>Bucket Browser</h1>
+
+    <div class="upload-section">
+        <h3>Upload File</h3>
+        <input type="file" id="file-input">
+        <button id="upload-btn" onclick="uploadFile()">Upload</button>
+        <div id="upload-status"></div>
+    </div>
 
     <div id="breadcrumb" class="breadcrumb"></div>
     <div id="status"></div>
@@ -33,6 +77,7 @@
                 <th>Name</th>
                 <th>Size</th>
                 <th>Last Modified</th>
+                <th>Tags</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -41,6 +86,26 @@
 
     <script>
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
+        let allowedTags = ['error', 'finished'];
+
+        async function fetchConfig() {
+            try {
+                const response = await fetch(`${API_URL}?download=config/UI-conf.json`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.download_url) {
+                    const configResponse = await fetch(data.download_url);
+                    if (configResponse.ok) {
+                        const configData = await configResponse.json();
+                        if (Array.isArray(configData.allowed_delete_tags)) {
+                            allowedTags = configData.allowed_delete_tags;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to fetch UI-conf.json, using defaults", e);
+            }
+        }
 
         // Get folder from URL parameter
         function getCurrentFolder() {
@@ -66,6 +131,7 @@
         async function fetchItems() {
             const currentFolder = getCurrentFolder();
             updateBreadcrumb(currentFolder);
+            await fetchConfig();
 
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
@@ -93,7 +159,7 @@
                     const parentFolder = currentFolder.split('/').filter(p => p).slice(0, -1).join('/') + (currentFolder.includes('/') && currentFolder.split('/').filter(p => p).length > 1 ? '/' : '');
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td colspan="4">
+                        <td colspan="5">
                             <a class="folder-link" href="?folder=${encodeURIComponent(parentFolder)}">
                                 <span class="icon">📁</span>.. (Parent Directory)
                             </a>
@@ -128,6 +194,27 @@
                     const dateCell = document.createElement('td');
                     dateCell.textContent = item.type === 'file' ? new Date(item.last_modified).toLocaleString() : '-';
 
+                    const tagsCell = document.createElement('td');
+                    if (item.type === 'file' && item.tags) {
+                        Object.entries(item.tags).forEach(([key, value]) => {
+                            const tagSpan = document.createElement('span');
+                            tagSpan.className = 'tag';
+                            tagSpan.textContent = `${key}: ${value}`;
+
+                            if (allowedTags.includes(key)) {
+                                const removeBtn = document.createElement('button');
+                                removeBtn.className = 'remove-tag-btn';
+                                removeBtn.innerHTML = '&times;';
+                                removeBtn.title = `Remove tag ${key}`;
+                                removeBtn.onclick = () => removeTag(item.name, key);
+                                tagSpan.appendChild(removeBtn);
+                            }
+                            tagsCell.appendChild(tagSpan);
+                        });
+                    } else {
+                        tagsCell.textContent = '-';
+                    }
+
                     const actionCell = document.createElement('td');
                     if (item.type === 'file') {
                         const btn = document.createElement('button');
@@ -140,6 +227,7 @@
                     row.appendChild(nameCell);
                     row.appendChild(sizeCell);
                     row.appendChild(dateCell);
+                    row.appendChild(tagsCell);
                     row.appendChild(actionCell);
                     tbody.appendChild(row);
                 });
@@ -167,6 +255,87 @@
             } catch (error) {
                 console.error('Download error:', error);
                 alert(`Error initiating download: ${error.message}`);
+            }
+        }
+
+        async function removeTag(filename, tagKey) {
+            if (!confirm(`Are you sure you want to remove tag "${tagKey}" from ${filename}?`)) return;
+
+            try {
+                const url = `${API_URL}?remove_tag=${encodeURIComponent(filename)}&tag_key=${encodeURIComponent(tagKey)}`;
+                const response = await fetch(url, { method: 'POST' });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+                const result = await response.json();
+                if (result.success) {
+                    fetchItems(); // Refresh
+                } else {
+                    alert('Failed to remove tag: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Remove tag error:', error);
+                alert(`Error removing tag: ${error.message}`);
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('file-input');
+            const statusDiv = document.getElementById('upload-status');
+            const uploadBtn = document.getElementById('upload-btn');
+
+            if (!fileInput.files.length) {
+                alert('Please select a file.');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const currentFolder = getCurrentFolder();
+
+            statusDiv.textContent = 'Getting upload URL...';
+            uploadBtn.disabled = true;
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        folder: currentFolder,
+                        file_name: file.name
+                    })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || `HTTP error! status: ${response.status}`);
+                }
+
+                const { upload_url } = await response.json();
+
+                statusDiv.textContent = 'Uploading...';
+                const uploadResponse = await fetch(upload_url, {
+                    method: 'PUT',
+                    body: file,
+                    headers: {
+                        'If-None-Match': '*'
+                    }
+                });
+
+                if (uploadResponse.status === 412) {
+                    statusDiv.textContent = 'Error: File already exists (Precondition Failed).';
+                    statusDiv.style.color = 'red';
+                } else if (!uploadResponse.ok) {
+                    throw new Error(`Upload failed with status: ${uploadResponse.status}`);
+                } else {
+                    statusDiv.textContent = 'Upload successful!';
+                    statusDiv.style.color = 'green';
+                    fileInput.value = '';
+                    fetchItems();
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                statusDiv.textContent = `Error: ${error.message}`;
+                statusDiv.style.color = 'red';
+            } finally {
+                uploadBtn.disabled = false;
             }
         }
 

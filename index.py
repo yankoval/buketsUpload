@@ -24,8 +24,9 @@ def handler(event, context):
     headers = {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+        'Access-Control-Allow-Headers': 'Content-Type,If-None-Match',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS,DELETE',
+        'Access-Control-Expose-Headers': 'ETag'
     }
 
     # Handle CORS preflight
@@ -42,6 +43,8 @@ def handler(event, context):
             'headers': headers,
             'body': json.dumps({'error': "BUCKET_NAME environment variable is not set."})
         }
+
+    method = event.get('httpMethod', 'GET')
 
     try:
         # Extract parameters from query string and body
@@ -69,7 +72,7 @@ def handler(event, context):
             prefix += '/'
 
         # 1. List files and subfolders
-        if 'list' in query_params:
+        if 'list' in query_params and method == 'GET':
             response = s3_client.list_objects_v2(
                 Bucket=bucket,
                 Prefix=prefix,
@@ -88,11 +91,17 @@ def handler(event, context):
                 for obj in response['Contents']:
                     if obj['Key'] == prefix:
                         continue
+
+                    # Fetch tags for each file
+                    tagging = s3_client.get_object_tagging(Bucket=bucket, Key=obj['Key'])
+                    tags = {t['Key']: t['Value'] for t in tagging.get('TagSet', [])}
+
                     items.append({
                         'name': obj['Key'],
                         'type': 'file',
                         'size': obj['Size'],
-                        'last_modified': obj['LastModified']
+                        'last_modified': obj['LastModified'],
+                        'tags': tags
                     })
 
             return {
@@ -101,8 +110,36 @@ def handler(event, context):
                 'body': json.dumps(items, default=datetime_handler)
             }
 
-        # 2. Get download URL
-        if 'download' in query_params:
+        # 2. Remove tag
+        if 'remove_tag' in query_params and method == 'POST':
+            key = query_params['remove_tag']
+            tag_to_remove = query_params.get('tag_key')
+
+            if not tag_to_remove:
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps({'error': "tag_key parameter is required"})
+                }
+
+            tagging = s3_client.get_object_tagging(Bucket=bucket, Key=key)
+            current_tags = tagging.get('TagSet', [])
+            new_tag_set = [t for t in current_tags if t['Key'] != tag_to_remove]
+
+            s3_client.put_object_tagging(
+                Bucket=bucket,
+                Key=key,
+                Tagging={'TagSet': new_tag_set}
+            )
+
+            return {
+                'statusCode': 200,
+                'headers': headers,
+                'body': json.dumps({'success': True, 'message': f"Tag '{tag_to_remove}' removed from '{key}'"})
+            }
+
+        # 3. Get download URL
+        if 'download' in query_params and method == 'GET':
             key = query_params['download']
             url = s3_client.generate_presigned_url(
                 'get_object',
@@ -119,7 +156,14 @@ def handler(event, context):
                 'body': json.dumps({'download_url': url})
             }
 
-        # 3. Default: Generate upload URL
+        # 4. Default: Generate upload URL (only for POST)
+        if method != 'POST':
+            return {
+                'statusCode': 405,
+                'headers': headers,
+                'body': json.dumps({'error': f"Method {method} not allowed for this action"})
+            }
+
         # Check folder existence if provided
         if prefix:
             check_response = s3_client.list_objects_v2(
@@ -147,7 +191,11 @@ def handler(event, context):
 
         url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': bucket, 'Key': key},
+            Params={
+                'Bucket': bucket,
+                'Key': key,
+                'IfNoneMatch': '*'
+            },
             ExpiresIn=3600
         )
         return {
