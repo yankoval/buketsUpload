@@ -31,12 +31,14 @@
         }
         .remove-tag-btn {
             cursor: pointer;
-            margin-left: 4px;
+            margin-left: 6px;
             color: #d32f2f;
             font-weight: bold;
             border: none;
             background: none;
             padding: 0;
+            font-size: 1.1rem;
+            line-height: 1;
         }
         .upload-section {
             background: #f9f9f9;
@@ -88,7 +90,9 @@
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
         let allowedTags = ['error', 'finished'];
 
+        let configLoaded = false;
         async function fetchConfig() {
+            if (configLoaded) return;
             try {
                 const response = await fetch(`${API_URL}?download=config/UI-conf.json`);
                 if (!response.ok) return;
@@ -97,8 +101,9 @@
                     const configResponse = await fetch(data.download_url);
                     if (configResponse.ok) {
                         const configData = await configResponse.json();
-                        if (Array.isArray(configData.allowed_delete_tags)) {
+                        if (configData && Array.isArray(configData.allowed_delete_tags)) {
                             allowedTags = configData.allowed_delete_tags;
+                            configLoaded = true;
                         }
                     }
                 }
@@ -202,12 +207,22 @@
                             tagSpan.className = 'tag';
                             tagSpan.textContent = `${key}: ${value}`;
 
-                            if (allowedTags.includes(key)) {
+                            const k = String(key).trim().toLowerCase();
+                            const v = String(value).trim().toLowerCase();
+                            const isAllowed = allowedTags.some(t => {
+                                const s = String(t).trim().toLowerCase();
+                                return s === k || s === v;
+                            });
+
+                            if (isAllowed) {
                                 const removeBtn = document.createElement('button');
                                 removeBtn.className = 'remove-tag-btn';
                                 removeBtn.innerHTML = '&times;';
                                 removeBtn.title = `Remove tag ${key}`;
-                                removeBtn.onclick = () => removeTag(item.name, key);
+                                removeBtn.onclick = (e) => {
+                                    e.stopPropagation();
+                                    removeTag(item.name, key);
+                                };
                                 tagSpan.appendChild(removeBtn);
                             }
                             tagsCell.appendChild(tagSpan);
