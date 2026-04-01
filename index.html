@@ -107,22 +107,23 @@
             }
         }
 
-        // Get folder from URL parameter
+        // Get folder from URL hash
         function getCurrentFolder() {
-            const params = new URLSearchParams(window.location.search);
+            const hash = window.location.hash.substring(1); // remove '#'
+            const params = new URLSearchParams(hash);
             return params.get('folder') || '';
         }
 
         function updateBreadcrumb(folder) {
             const breadcrumb = document.getElementById('breadcrumb');
-            let html = '<a href="?">Root</a>';
+            let html = '<a href="#">Root</a>';
 
             if (folder) {
                 const parts = folder.split('/').filter(p => p);
                 let path = '';
                 parts.forEach((part, index) => {
                     path += part + '/';
-                    html += ` / <a href="?folder=${encodeURIComponent(path)}">${part}</a>`;
+                    html += ` / <a href="#folder=${encodeURIComponent(path)}">${part}</a>`;
                 });
             }
             breadcrumb.innerHTML = html;
@@ -160,7 +161,7 @@
                     const row = document.createElement('tr');
                     row.innerHTML = `
                         <td colspan="5">
-                            <a class="folder-link" href="?folder=${encodeURIComponent(parentFolder)}">
+                            <a class="folder-link" href="#folder=${encodeURIComponent(parentFolder)}">
                                 <span class="icon">📁</span>.. (Parent Directory)
                             </a>
                         </td>
@@ -180,7 +181,7 @@
                     if (item.type === 'folder') {
                         const link = document.createElement('a');
                         link.className = 'folder-link';
-                        link.href = `?folder=${encodeURIComponent(item.name)}`;
+                        link.href = `#folder=${encodeURIComponent(item.name)}`;
                         link.innerHTML = `<span class="icon">📁</span>${item.name.replace(currentFolder, '')}`;
                         nameCell.appendChild(link);
                     } else {
@@ -348,7 +349,7 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
         }
 
-        window.onpopstate = () => fetchItems();
+        window.onhashchange = () => fetchItems();
         fetchItems();
     </script>
 </body>
