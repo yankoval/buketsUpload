@@ -47,6 +47,26 @@
             border-radius: 4px;
             margin-bottom: 1.5rem;
         }
+        .filter-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+        .filter-controls input {
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .filter-controls button {
+            background: #8bc34a;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .filter-controls button:hover { background: #7cb342; }
         .upload-section input[type="file"] { margin-bottom: 10px; }
         .upload-section button {
             background: #4caf50;
@@ -104,13 +124,18 @@
         <div id="upload-status"></div>
     </div>
 
-    <div class="filter-section" id="filter-section" style="display:none;">
+    <div class="filter-section" id="filter-section">
         <div class="filter-header">
-            <h3>Active Filters</h3>
+            <h3>Filters</h3>
             <button onclick="clearFilters()" style="font-size: 0.8rem;">Clear All</button>
         </div>
+        <div class="filter-controls">
+            <input type="text" id="filter-key" placeholder="Tag Key (e.g. status)">
+            <input type="text" id="filter-val" placeholder="Tag Value (e.g. error)">
+            <button onclick="addManualFilter()">Add Filter</button>
+        </div>
         <div id="active-filters"></div>
-        <small style="color: #666;">Click on a tag in the table to filter by it.</small>
+        <small style="color: #666;">Click on a tag in the table to quickly add a filter.</small>
     </div>
 
     <div id="breadcrumb" class="breadcrumb"></div>
@@ -177,18 +202,28 @@
             updateFilterUI();
         }
 
+        function addManualFilter() {
+            const key = document.getElementById('filter-key').value.trim();
+            const val = document.getElementById('filter-val').value.trim();
+            if (key && val) {
+                addFilter(key, val);
+                document.getElementById('filter-key').value = '';
+                document.getElementById('filter-val').value = '';
+            } else {
+                alert('Both Tag Key and Tag Value are required.');
+            }
+        }
+
         function updateFilterUI() {
-            const section = document.getElementById('filter-section');
             const container = document.getElementById('active-filters');
             container.innerHTML = '';
 
             const keys = Object.keys(activeFilters);
             if (keys.length === 0) {
-                section.style.display = 'none';
+                container.innerHTML = '<p style="color: #666; font-style: italic;">No active filters.</p>';
                 return;
             }
 
-            section.style.display = 'block';
             keys.forEach(key => {
                 activeFilters[key].forEach(val => {
                     const chip = document.createElement('div');
