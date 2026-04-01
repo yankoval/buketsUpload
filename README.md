@@ -82,7 +82,9 @@ with open("downloaded_file.pdf", "wb") as f:
 
 ### 3. Загрузка файла (Upload)
 
-*Примечание: Загрузка в папку разрешена только если папка уже существует.*
+*Примечание: Загрузка в папку разрешена только если папка уже существует. Реализована гарантированная однократная загрузка: если файл с таким именем уже существует, S3 вернет ошибку 412 Precondition Failed.*
+
+**Важно:** При загрузке необходимо обязательно передавать заголовок `If-None-Match: *`.
 
 #### cURL
 ```bash
@@ -93,8 +95,8 @@ UPLOAD_INFO=$(curl -s -X POST "https://functions.yandexcloud.net/d4e54fnlggbipdr
 
 UPLOAD_URL=$(echo $UPLOAD_INFO | jq -r .upload_url)
 
-# 2. Загружаем файл
-curl -X PUT -T "local_file.txt" "$UPLOAD_URL"
+# 2. Загружаем файл с проверкой на существование
+curl -X PUT -T "local_file.txt" -H "If-None-Match: *" "$UPLOAD_URL"
 ```
 
 #### Python
@@ -107,11 +109,42 @@ payload = {"file_name": "test.txt", "folder": "uploads/"}
 response = requests.post(url, json=payload)
 upload_url = response.json()["upload_url"]
 
-# 2. Загружаем
+# 2. Загружаем с заголовком If-None-Match
 with open("local_file.txt", "rb") as f:
-    requests.put(upload_url, data=f)
+    headers = {"If-None-Match": "*"}
+    requests.put(upload_url, data=f, headers=headers)
 ```
+
+### 4. Удаление тега объекта (Remove Tag)
+
+#### cURL
+```bash
+# Удаление тега 'error' у файла 'docs/file.pdf'
+curl -X POST "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19?remove_tag=docs/file.pdf&tag_key=error"
+```
+
+## Управление тегами и конфигурация (Tags Management)
+
+При выводе списка файлов (`list=true`), функция автоматически возвращает теги для каждого объекта.
+
+### Конфигурация разрешенных тегов
+
+В веб-интерфейсе реализована возможность удаления тегов. Список тегов, которые разрешено удалять через UI, настраивается в файле `config/UI-conf.json` в самом бакете.
+
+#### Пример `config/UI-conf.json`:
+```json
+{
+  "allowed_delete_tags": ["error", "finished", "processed"]
+}
+```
+Если файл отсутствует, по умолчанию разрешено удаление тегов `error` и `finished`.
 
 ## Веб-интерфейс (Browsing)
 
-В репозитории есть файл `index.html`, который можно использовать как образец для создания веб-интерфейса. Он позволяет просматривать содержимое бакета, перемещаться по папкам и скачивать файлы в один клик.
+В репозитории есть файл `index.html`, который можно использовать как образец для создания веб-интерфейса.
+
+Особенности:
+- **Навигация**: Использует URL hash (`#folder=path/`) для навигации, что предотвращает ошибки доступа (AccessDenied) при обновлении страницы в статическом хостинге S3.
+- **Загрузка**: Позволяет загружать файлы с защитой от перезаписи.
+- **Теги**: Отображает теги объектов и позволяет удалять разрешенные теги (настраивается через `config/UI-conf.json`).
+- **Скачивание**: Позволяет скачивать файлы в один клик.
