@@ -46,23 +46,24 @@ def handler(event, context):
 
     method = event.get('httpMethod', 'GET')
 
+    # Combine all parameters from query string and JSON body
+    params = query_params.copy()
+    if event.get('body'):
+        try:
+            body_str = event['body']
+            if event.get('isBase64Encoded'):
+                import base64
+                body_str = base64.b64decode(body_str).decode('utf-8')
+            body = json.loads(body_str)
+            if isinstance(body, dict):
+                params.update(body)
+        except:
+            pass
+
     try:
-        # Extract parameters from query string and body
-        folder = query_params.get('folder', '')
-        file_name = None
-
-        if event.get('body'):
-            try:
-                body_str = event['body']
-                if event.get('isBase64Encoded'):
-                    import base64
-                    body_str = base64.b64decode(body_str).decode('utf-8')
-
-                body = json.loads(body_str)
-                folder = body.get('folder', folder)
-                file_name = body.get('file_name')
-            except:
-                pass
+        # Extract common parameters
+        folder = params.get('folder', '')
+        file_name = params.get('file_name')
 
         # Normalize folder prefix:
         # 1. Strip leading slashes
@@ -72,7 +73,7 @@ def handler(event, context):
             prefix += '/'
 
         # 1. List files and subfolders
-        if 'list' in query_params and method == 'GET':
+        if 'list' in params:
             response = s3_client.list_objects_v2(
                 Bucket=bucket,
                 Prefix=prefix,
@@ -111,10 +112,10 @@ def handler(event, context):
             }
 
         # 2. Set/Update tag
-        if 'set_tag' in query_params and method == 'POST':
-            key = query_params['set_tag']
-            tag_key = query_params.get('tag_key')
-            tag_value = query_params.get('tag_value')
+        if 'set_tag' in params:
+            key = params['set_tag']
+            tag_key = params.get('tag_key')
+            tag_value = params.get('tag_value')
 
             if not tag_key or tag_value is None:
                 return {
@@ -143,9 +144,9 @@ def handler(event, context):
             }
 
         # 3. Remove tag
-        if 'remove_tag' in query_params and method == 'POST':
-            key = query_params['remove_tag']
-            tag_to_remove = query_params.get('tag_key')
+        if 'remove_tag' in params:
+            key = params['remove_tag']
+            tag_to_remove = params.get('tag_key')
 
             if not tag_to_remove:
                 return {
@@ -171,8 +172,8 @@ def handler(event, context):
             }
 
         # 4. Get download URL
-        if 'download' in query_params and method == 'GET':
-            key = query_params['download']
+        if 'download' in params:
+            key = params['download']
             url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={
