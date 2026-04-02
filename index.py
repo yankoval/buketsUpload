@@ -110,7 +110,39 @@ def handler(event, context):
                 'body': json.dumps(items, default=datetime_handler)
             }
 
-        # 2. Remove tag
+        # 2. Set/Update tag
+        if 'set_tag' in query_params and method == 'POST':
+            key = query_params['set_tag']
+            tag_key = query_params.get('tag_key')
+            tag_value = query_params.get('tag_value')
+
+            if not tag_key or tag_value is None:
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps({'error': "tag_key and tag_value parameters are required"})
+                }
+
+            tagging = s3_client.get_object_tagging(Bucket=bucket, Key=key)
+            current_tags = tagging.get('TagSet', [])
+
+            # Remove if already exists to update
+            new_tag_set = [t for t in current_tags if t['Key'] != tag_key]
+            new_tag_set.append({'Key': tag_key, 'Value': tag_value})
+
+            s3_client.put_object_tagging(
+                Bucket=bucket,
+                Key=key,
+                Tagging={'TagSet': new_tag_set}
+            )
+
+            return {
+                'statusCode': 200,
+                'headers': headers,
+                'body': json.dumps({'success': True, 'message': f"Tag '{tag_key}' set to '{tag_value}' for '{key}'"})
+            }
+
+        # 3. Remove tag
         if 'remove_tag' in query_params and method == 'POST':
             key = query_params['remove_tag']
             tag_to_remove = query_params.get('tag_key')
@@ -138,7 +170,7 @@ def handler(event, context):
                 'body': json.dumps({'success': True, 'message': f"Tag '{tag_to_remove}' removed from '{key}'"})
             }
 
-        # 3. Get download URL
+        # 4. Get download URL
         if 'download' in query_params and method == 'GET':
             key = query_params['download']
             url = s3_client.generate_presigned_url(
@@ -156,7 +188,7 @@ def handler(event, context):
                 'body': json.dumps({'download_url': url})
             }
 
-        # 4. Default: Generate upload URL (only for POST)
+        # 5. Default: Generate upload URL (only for POST)
         if method != 'POST':
             return {
                 'statusCode': 405,

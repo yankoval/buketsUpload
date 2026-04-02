@@ -19,6 +19,17 @@
         .error { color: #cc0000; font-weight: bold; }
         .size { color: #666; font-size: 0.9rem; }
         .icon { margin-right: 8px; }
+        .set-tag-btn {
+            cursor: pointer;
+            color: #4caf50;
+            background: none;
+            border: 1px solid #4caf50;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            margin-left: 8px;
+        }
+        .set-tag-btn:hover { background: #e8f5e9; }
         .tag {
             display: inline-flex;
             align-items: center;
@@ -408,6 +419,12 @@
                         btn.textContent = 'Download';
                         btn.onclick = () => downloadFile(item.name);
                         actionCell.appendChild(btn);
+
+                        const setTagBtn = document.createElement('button');
+                        setTagBtn.className = 'set-tag-btn';
+                        setTagBtn.textContent = '+ Tag';
+                        setTagBtn.onclick = () => promptSetTag(item.name);
+                        actionCell.appendChild(setTagBtn);
                     }
 
                     row.appendChild(nameCell);
@@ -461,6 +478,29 @@
             } catch (error) {
                 console.error('Remove tag error:', error);
                 alert(`Error removing tag: ${error.message}`);
+            }
+        }
+
+        async function promptSetTag(filename) {
+            const tagKey = prompt("Enter tag key (e.g. status):");
+            if (!tagKey) return;
+            const tagValue = prompt(`Enter tag value for "${tagKey}":`);
+            if (tagValue === null) return;
+
+            try {
+                const url = `${API_URL}?set_tag=${encodeURIComponent(filename)}&tag_key=${encodeURIComponent(tagKey)}&tag_value=${encodeURIComponent(tagValue)}`;
+                const response = await fetch(url, { method: 'POST' });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+                const result = await response.json();
+                if (result.success) {
+                    fetchItems(); // Refresh
+                } else {
+                    alert('Failed to set tag: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Set tag error:', error);
+                alert(`Error setting tag: ${error.message}`);
             }
         }
 
