@@ -68,12 +68,12 @@ def handler(event, context):
         # Normalize folder prefix:
         # 1. Strip leading slashes
         # 2. Ensure trailing slash if not empty
-        prefix = str(folder or '').lstrip('/')
+        prefix = str(folder or '').strip().lstrip('/')
         if prefix and not prefix.endswith('/'):
             prefix += '/'
 
         # 1. List files and subfolders
-        if 'list' in params:
+        if params.get('list') == 'true' or params.get('list') is True:
             response = s3_client.list_objects_v2(
                 Bucket=bucket,
                 Prefix=prefix,

@@ -11,15 +11,20 @@ $FunctionUrl = "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19"
 $LogFile = Join-Path $LocalPath "download_worker_log.txt"
 $LockFile = Join-Path $LocalPath "download_script.lock"
 
-# Пропускать ошибки SSL
+# Очистка URL от возможных скрытых символов и пробелов
+$CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
+$CleanUrl = $CleanUrl.Trim()
+
+# Пропускать ошибки SSL и форсировать TLS 1.2
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Write-Log($Message, $Level = "INFO") {
     $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogEntry = "$Stamp - $Level - $Message"
     Write-Host $LogEntry -ForegroundColor ([ConsoleColor]::White)
-    if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
     try {
+        if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
         Add-Content -Path $LogFile -Value $LogEntry -ErrorAction SilentlyContinue
     } catch {}
 }
@@ -36,9 +41,13 @@ try {
     Write-Log "Старт мониторинга S3. Папка: '$S3Folder'. Локальный путь: '$LocalPath'"
 
     # 1. Получаем список файлов из S3
-    $ListUrl = "$FunctionUrl?list=true&folder=$([Uri]::EscapeDataString($S3Folder))"
+    $Body = @{
+        list = "true"
+        folder = $S3Folder.Trim()
+    }
     try {
-        $Items = Invoke-RestMethod -Method Get -Uri $ListUrl
+        Write-Log "Запрос списка файлов из S3..."
+        $Items = Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($Body | ConvertTo-Json) -ContentType "application/json; charset=utf-8"
     } catch {
         Write-Log "Ошибка получения списка файлов: $($_.Exception.Message)" "ERROR"
         exit
@@ -63,7 +72,6 @@ try {
         if (-not $Match) { continue }
 
         # 3. Фильтр по тегам
-        # Скачиваем если downloadStatus не равен downloaded или downloading или тега нет
         $DownloadStatus = $null
         if ($Item.tags -and $Item.tags.downloadStatus) {
             $DownloadStatus = $Item.tags.downloadStatus
@@ -73,34 +81,50 @@ try {
             continue
         }
 
-        Write-Log "Найдено для скачивания: $FileName (Status: $($DownloadStatus -or 'None'))"
+        Write-Log "Найдено для скачивания: $FileName (S3 Key: $S3Key, Status: $($DownloadStatus -or 'None'))"
 
         try {
-            # 4. Устанавливаем статус 'downloading' (Concurrency protection)
-            $SetTagUrl = "$FunctionUrl?set_tag=$([Uri]::EscapeDataString($S3Key))&tag_key=downloadStatus&tag_value=downloading"
-            Invoke-RestMethod -Method Post -Uri $SetTagUrl | Out-Null
+            # 4. Устанавливаем статус 'downloading'
+            Write-Log "Установка статуса 'downloading'..."
+            $BodySet = @{
+                set_tag = $S3Key
+                tag_key = "downloadStatus"
+                tag_value = "downloading"
+            }
+            Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodySet | ConvertTo-Json) -ContentType "application/json; charset=utf-8" | Out-Null
 
             # 5. Получаем ссылку на скачивание
-            $DownloadReqUrl = "$FunctionUrl?download=$([Uri]::EscapeDataString($S3Key))"
-            $DownloadResponse = Invoke-RestMethod -Method Get -Uri $DownloadReqUrl
+            Write-Log "Получение ссылки скачивания..."
+            $BodyDown = @{
+                download = $S3Key
+            }
+            $DownloadResponse = Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodyDown | ConvertTo-Json) -ContentType "application/json; charset=utf-8"
             $DownloadUrl = $DownloadResponse.download_url
 
             # 6. Скачиваем файл
             $TargetFile = Join-Path $LocalPath $FileName
+            Write-Log "Скачивание файла..."
             Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetFile
             Write-Log "Успешно скачано: $FileName"
 
             # 7. Устанавливаем статус 'downloaded'
-            $SetTagUrl = "$FunctionUrl?set_tag=$([Uri]::EscapeDataString($S3Key))&tag_key=downloadStatus&tag_value=downloaded"
-            Invoke-RestMethod -Method Post -Uri $SetTagUrl | Out-Null
+            Write-Log "Установка статуса 'downloaded'..."
+            $BodySetEnd = @{
+                set_tag = $S3Key
+                tag_key = "downloadStatus"
+                tag_value = "downloaded"
+            }
+            Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodySetEnd | ConvertTo-Json) -ContentType "application/json; charset=utf-8" | Out-Null
             Write-Log "Статус обновлен на 'downloaded' для: $FileName"
 
         } catch {
             Write-Log "Ошибка при обработке $FileName : $($_.Exception.Message)" "ERROR"
-            # Сбрасываем статус при ошибке (опционально)
             try {
-                $ResetTagUrl = "$FunctionUrl?remove_tag=$([Uri]::EscapeDataString($S3Key))&tag_key=downloadStatus"
-                Invoke-RestMethod -Method Post -Uri $ResetTagUrl | Out-Null
+                $BodyReset = @{
+                    remove_tag = $S3Key
+                    tag_key = "downloadStatus"
+                }
+                Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodyReset | ConvertTo-Json) -ContentType "application/json; charset=utf-8" | Out-Null
             } catch {}
         }
     }
