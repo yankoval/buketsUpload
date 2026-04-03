@@ -40,6 +40,8 @@ try {
     New-Item -Path $LockFile -ItemType File -Force | Out-Null
     Write-Log "Старт мониторинга S3. Папка: '$S3Folder'. Локальный путь: '$LocalPath'"
 
+    $Url = [Uri]$CleanUrl
+
     # 1. Получаем список файлов из S3
     $Body = @{
         list = "true"
@@ -47,29 +49,48 @@ try {
     }
     try {
         Write-Log "Запрос списка файлов из S3..."
-        $Items = Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($Body | ConvertTo-Json) -ContentType "application/json; charset=utf-8"
+        $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8"
     } catch {
         Write-Log "Ошибка получения списка файлов: $($_.Exception.Message)" "ERROR"
         exit
     }
 
-    if ($null -eq $Items -or $Items.Count -eq 0) {
-        Write-Log "Файлов в S3 не найдено."
+    if ($null -eq $RawItems) {
+        Write-Log "Ответ от S3 пуст (null)."
         exit
     }
 
-    foreach ($Item in $Items) {
-        if ($Item.type -ne "file") { continue }
+    # Обеспечиваем массив
+    $Items = @($RawItems)
+    Write-Log "Получено объектов из S3: $($Items.Count)"
 
-        $FileName = [System.IO.Path]::GetFileName($Item.name)
+    foreach ($Item in $Items) {
         $S3Key = $Item.name
+        $Type = $Item.type
+
+        Write-Log "Объект в S3: $S3Key (Тип: $Type)"
+
+        if ($Type -ne "file") {
+            continue
+        }
+
+        # Получаем имя файла (последняя часть после слеша)
+        $FileName = $S3Key.Split('/')[-1]
+        if ([string]::IsNullOrWhiteSpace($FileName)) {
+            Write-Log "Не удалось извлечь имя файла из ключа $S3Key" "WARN"
+            continue
+        }
 
         # 2. Фильтр по маске
         $Match = $false
         foreach ($Mask in $FileMasks) {
             if ($FileName -like $Mask) { $Match = $true; break }
         }
-        if (-not $Match) { continue }
+
+        if (-not $Match) {
+            Write-Log "Файл $FileName не соответствует маскам: $($FileMasks -join ', ')"
+            continue
+        }
 
         # 3. Фильтр по тегам
         $DownloadStatus = $null
@@ -78,53 +99,59 @@ try {
         }
 
         if ($DownloadStatus -eq "downloaded" -or $DownloadStatus -eq "downloading") {
+            Write-Log "Файл $FileName уже в процессе или скачан (Статус: $DownloadStatus)"
             continue
         }
 
-        Write-Log "Найдено для скачивания: $FileName (S3 Key: $S3Key, Status: $($DownloadStatus -or 'None'))"
+        Write-Log "Найдено для скачивания: $FileName (S3 Key: $S3Key, Текущий статус: $($DownloadStatus -or 'нет'))"
 
         try {
             # 4. Устанавливаем статус 'downloading'
-            Write-Log "Установка статуса 'downloading'..."
+            Write-Log "Установка статуса 'downloading' для $FileName..."
             $BodySet = @{
                 set_tag = $S3Key
                 tag_key = "downloadStatus"
                 tag_value = "downloading"
             }
-            Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodySet | ConvertTo-Json) -ContentType "application/json; charset=utf-8" | Out-Null
+            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" | Out-Null
 
             # 5. Получаем ссылку на скачивание
-            Write-Log "Получение ссылки скачивания..."
+            Write-Log "Получение ссылки скачивания для $FileName..."
             $BodyDown = @{
                 download = $S3Key
             }
-            $DownloadResponse = Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodyDown | ConvertTo-Json) -ContentType "application/json; charset=utf-8"
+            $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8"
             $DownloadUrl = $DownloadResponse.download_url
+
+            if (!$DownloadUrl) {
+                throw "API не вернуло ссылку на скачивание (download_url)."
+            }
 
             # 6. Скачиваем файл
             $TargetFile = Join-Path $LocalPath $FileName
             Write-Log "Скачивание файла..."
             Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetFile
-            Write-Log "Успешно скачано: $FileName"
+            Write-Log "Успешно скачано в $TargetFile"
 
             # 7. Устанавливаем статус 'downloaded'
-            Write-Log "Установка статуса 'downloaded'..."
+            Write-Log "Установка статуса 'downloaded' для $FileName..."
             $BodySetEnd = @{
                 set_tag = $S3Key
                 tag_key = "downloadStatus"
                 tag_value = "downloaded"
             }
-            Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodySetEnd | ConvertTo-Json) -ContentType "application/json; charset=utf-8" | Out-Null
-            Write-Log "Статус обновлен на 'downloaded' для: $FileName"
+            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySetEnd | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" | Out-Null
+            Write-Log "Статус успешно обновлен."
 
         } catch {
             Write-Log "Ошибка при обработке $FileName : $($_.Exception.Message)" "ERROR"
             try {
+                # Сброс статуса для возможности повторной попытки
                 $BodyReset = @{
                     remove_tag = $S3Key
                     tag_key = "downloadStatus"
                 }
-                Invoke-RestMethod -Method Post -Uri $CleanUrl -Body ($BodyReset | ConvertTo-Json) -ContentType "application/json; charset=utf-8" | Out-Null
+                Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyReset | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" | Out-Null
             } catch {}
         }
     }

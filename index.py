@@ -54,10 +54,12 @@ def handler(event, context):
             if event.get('isBase64Encoded'):
                 import base64
                 body_str = base64.b64decode(body_str).decode('utf-8')
+
             body = json.loads(body_str)
             if isinstance(body, dict):
                 params.update(body)
-        except:
+        except Exception as e:
+            # Fallback or silent ignore
             pass
 
     try:
@@ -66,14 +68,15 @@ def handler(event, context):
         file_name = params.get('file_name')
 
         # Normalize folder prefix:
-        # 1. Strip leading slashes
+        # 1. Strip leading slashes and whitespace
         # 2. Ensure trailing slash if not empty
         prefix = str(folder or '').strip().lstrip('/')
         if prefix and not prefix.endswith('/'):
             prefix += '/'
 
         # 1. List files and subfolders
-        if params.get('list') == 'true' or params.get('list') is True:
+        is_list = str(params.get('list', '')).lower() in ('true', '1', 't', 'yes', 'y')
+        if is_list:
             response = s3_client.list_objects_v2(
                 Bucket=bucket,
                 Prefix=prefix,
@@ -129,7 +132,7 @@ def handler(event, context):
 
             # Remove if already exists to update
             new_tag_set = [t for t in current_tags if t['Key'] != tag_key]
-            new_tag_set.append({'Key': tag_key, 'Value': tag_value})
+            new_tag_set.append({'Key': tag_key, 'Value': str(tag_value)})
 
             s3_client.put_object_tagging(
                 Bucket=bucket,
@@ -190,51 +193,51 @@ def handler(event, context):
             }
 
         # 5. Default: Generate upload URL (only for POST)
-        if method != 'POST':
+        if method == 'POST':
+            # Check folder existence if provided
+            if prefix:
+                check_response = s3_client.list_objects_v2(
+                    Bucket=bucket,
+                    Prefix=prefix,
+                    MaxKeys=1
+                )
+                if 'Contents' not in check_response and 'CommonPrefixes' not in check_response:
+                    return {
+                        'statusCode': 400,
+                        'headers': headers,
+                        'body': json.dumps({
+                            'error': f"Folder '{folder}' (normalized to '{prefix}') does not exist in bucket '{bucket}'. Upload denied.",
+                            'hint': "Ensure the folder exists and you have provided the correct name."
+                        })
+                    }
+
+            # Determine final key
+            final_file_name = str(file_name or uuid.uuid4()).strip().lstrip('/')
+
+            # Prepend prefix if not already part of the filename
+            key = final_file_name
+            if prefix and not key.startswith(prefix):
+                key = prefix + key
+
+            url = s3_client.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': bucket,
+                    'Key': key,
+                    'IfNoneMatch': '*'
+                },
+                ExpiresIn=3600
+            )
             return {
-                'statusCode': 405,
+                'statusCode': 200,
                 'headers': headers,
-                'body': json.dumps({'error': f"Method {method} not allowed for this action"})
+                'body': json.dumps({'upload_url': url, 'key': key})
             }
 
-        # Check folder existence if provided
-        if prefix:
-            check_response = s3_client.list_objects_v2(
-                Bucket=bucket,
-                Prefix=prefix,
-                MaxKeys=1
-            )
-            if 'Contents' not in check_response and 'CommonPrefixes' not in check_response:
-                return {
-                    'statusCode': 400,
-                    'headers': headers,
-                    'body': json.dumps({
-                        'error': f"Folder '{folder}' (normalized to '{prefix}') does not exist in bucket '{bucket}'. Upload denied.",
-                        'hint': "Ensure the folder exists and you have provided the correct name."
-                    })
-                }
-
-        # Determine final key
-        final_file_name = str(file_name or uuid.uuid4()).lstrip('/')
-
-        # Prepend prefix if not already part of the filename
-        key = final_file_name
-        if prefix and not key.startswith(prefix):
-            key = prefix + key
-
-        url = s3_client.generate_presigned_url(
-            'put_object',
-            Params={
-                'Bucket': bucket,
-                'Key': key,
-                'IfNoneMatch': '*'
-            },
-            ExpiresIn=3600
-        )
         return {
-            'statusCode': 200,
+            'statusCode': 405,
             'headers': headers,
-            'body': json.dumps({'upload_url': url, 'key': key})
+            'body': json.dumps({'error': f"Method {method} not allowed or parameters missing"})
         }
 
     except Exception as e:
