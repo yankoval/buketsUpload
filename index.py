@@ -177,12 +177,16 @@ def handler(event, context):
         # 4. Get download URL
         if 'download' in params:
             key = params['download']
+            import urllib.parse
+            filename = os.path.basename(key)
+            encoded_filename = urllib.parse.quote(filename)
+
             url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={
                     'Bucket': bucket,
                     'Key': key,
-                    'ResponseContentDisposition': f'attachment; filename="{os.path.basename(key)}"'
+                    'ResponseContentDisposition': f"attachment; filename=\"{encoded_filename}\"; filename*=UTF-8''{encoded_filename}"
                 },
                 ExpiresIn=3600
             )

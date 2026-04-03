@@ -80,11 +80,32 @@ try {
 
             $UploadUrl = $Response.upload_url
 
-            # 4. Загрузка в S3
+            # 4. Загрузка в S3 с ретраями
             $S3Headers = @{
                 "If-None-Match" = "*"
             }
-            Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/json" -Headers $S3Headers -UserAgent $UserAgent
+
+            $MaxRetries = 3
+            $RetryCount = 0
+            $Success = $false
+
+            while (-not $Success -and $RetryCount -lt $MaxRetries) {
+                try {
+                    Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/octet-stream" -Headers $S3Headers -UserAgent $UserAgent
+                    $Success = $true
+                } catch {
+                    # Проверка на 412 (уже есть)
+                    if ($_.Exception.InnerException -and $_.Exception.InnerException.Response -and $_.Exception.InnerException.Response.StatusCode -eq 412) {
+                        throw "Файл уже существует в S3 (412 Precondition Failed)"
+                    }
+
+                    $RetryCount++
+                    Write-Log "Попытка загрузки $RetryCount не удалась: $($_.Exception.Message). Ждем 2 сек..." "WARN"
+                    Start-Sleep -Seconds 2
+                }
+            }
+
+            if (-not $Success) { throw "Не удалось загрузить файл после $MaxRetries попыток." }
 
             # 5. Финализация
             if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
@@ -93,16 +114,18 @@ try {
 
         } catch {
             $ErrMsg = $_.Exception.Message
-            if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) {
-                if ($_.Exception.InnerException.Response.StatusCode -eq 412) {
-                    $ErrMsg = "Файл уже существует в S3 (412 Precondition Failed)"
-                }
-            }
             Write-Log "Ошибка при обработке $OriginalName : $ErrMsg" "ERROR"
 
             if (Test-Path $ProcessingFile) {
                 try {
-                    Rename-Item -Path $ProcessingFile -NewName $OriginalName -ErrorAction SilentlyContinue
+                    # Если ошибка 412, переименовываем в .uploaded чтобы больше не дергать,
+                    # либо оставляем как есть. В данном случае лучше пометить как uploaded чтобы не зацикливаться.
+                    if ($ErrMsg -like "*412*") {
+                        if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
+                        Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction SilentlyContinue
+                    } else {
+                        Rename-Item -Path $ProcessingFile -NewName $OriginalName -ErrorAction SilentlyContinue
+                    }
                 } catch {}
             }
         }

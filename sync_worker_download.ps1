@@ -71,6 +71,7 @@ try {
 
         if ($Type -ne "file") { continue }
 
+        # Получаем имя файла (последняя часть после слеша)
         $FileName = $S3Key.Split('/')[-1]
         if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
@@ -117,10 +118,30 @@ try {
                 throw "API не вернуло ссылку на скачивание (download_url)."
             }
 
-            # 6. Скачиваем файл (Используем Invoke-RestMethod для скачивания во избежание проблем с потоками)
+            # 6. Скачиваем файл (Используем WebClient для максимальной совместимости с потоками)
             $TargetFile = Join-Path $LocalPath $FileName
-            Write-Log "Скачивание файла..."
-            Invoke-RestMethod -Uri $DownloadUrl -OutFile $TargetFile -UserAgent $UserAgent
+            Write-Log "Скачивание файла в $TargetFile..."
+
+            $wc = New-Object System.Net.WebClient
+            $wc.Headers.Add("User-Agent", $UserAgent)
+
+            $MaxRetries = 3
+            $RetryCount = 0
+            $Success = $false
+
+            while (-not $Success -and $RetryCount -lt $MaxRetries) {
+                try {
+                    $wc.DownloadFile($DownloadUrl, $TargetFile)
+                    $Success = $true
+                } catch {
+                    $RetryCount++
+                    Write-Log "Попытка $RetryCount не удалась: $($_.Exception.Message). Ждем 2 сек..." "WARN"
+                    Start-Sleep -Seconds 2
+                }
+            }
+
+            if (-not $Success) { throw "Не удалось скачать файл после $MaxRetries попыток." }
+
             Write-Log "Успешно скачано: $FileName"
 
             # 7. Устанавливаем статус 'downloaded'
