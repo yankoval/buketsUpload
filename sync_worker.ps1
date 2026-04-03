@@ -4,7 +4,9 @@ param (
     [string]$S3Folder,
 
     [string]$MonitorPath = "\\10.0.22.248\1c_exchange\BatchPassToPrint\tst",
-    [string]$FileMask = "*.json"
+    [string]$FileMask = "*.json",
+
+    [int]$LoopDelaySeconds = 15
 )
 
 # --- НАСТРОЙКИ ---
@@ -41,94 +43,92 @@ if (Test-Path $LockFile) {
 try {
     if (!(Test-Path $MonitorPath)) { New-Item -ItemType Directory -Path $MonitorPath -Force | Out-Null }
     New-Item -Path $LockFile -ItemType File -Force | Out-Null
-    Write-Log "Старт мониторинга. Целевая папка в S3: '$S3Folder'"
-
-    $Files = Get-ChildItem -Path $MonitorPath -Filter $FileMask
-
-    if ($null -eq $Files -or $Files.Count -eq 0) {
-        Write-Log "Новых файлов для обработки нет."
-        exit
-    }
+    Write-Log "Старт мониторинга (цикл $LoopDelaySeconds сек). Целевая папка в S3: '$S3Folder'"
 
     $Url = [Uri]$CleanUrl
 
-    foreach ($File in $Files) {
-        $OriginalName = $File.Name
-        $BaseName = $File.BaseName
-        $ProcessingFile = Join-Path $MonitorPath "$BaseName.processing"
-        $UploadedFile = Join-Path $MonitorPath "$BaseName.uploaded"
+    while ($true) {
+        $Files = Get-ChildItem -Path $MonitorPath -Filter $FileMask
 
-        try {
-            # 1. Захват файла
-            Rename-Item -Path $File.FullName -NewName "$BaseName.processing" -ErrorAction Stop
-            Write-Log "Обработка: $OriginalName"
+        if ($null -ne $Files -and $Files.Count -gt 0) {
+            foreach ($File in $Files) {
+                $OriginalName = $File.Name
+                $BaseName = $File.BaseName
+                $ProcessingFile = Join-Path $MonitorPath "$BaseName.processing"
+                $UploadedFile = Join-Path $MonitorPath "$BaseName.uploaded"
 
-            # 2. Подготовка тела запроса
-            $Payload = @{
-                file_name = $OriginalName
-                folder    = $S3Folder.Trim()
-            }
-            $JsonBody = $Payload | ConvertTo-Json -Compress
-
-            # 3. Запрос ссылки
-            Write-Log "Запрос ссылки загрузки для $OriginalName..."
-            $Response = Invoke-RestMethod -Method Post `
-                                         -Uri $Url `
-                                         -Body $JsonBody `
-                                         -ContentType "application/json; charset=utf-8" `
-                                         -UserAgent $UserAgent
-
-            $UploadUrl = $Response.upload_url
-
-            # 4. Загрузка в S3 с ретраями
-            $S3Headers = @{
-                "If-None-Match" = "*"
-            }
-
-            $MaxRetries = 3
-            $RetryCount = 0
-            $Success = $false
-
-            while (-not $Success -and $RetryCount -lt $MaxRetries) {
                 try {
-                    Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/octet-stream" -Headers $S3Headers -UserAgent $UserAgent
-                    $Success = $true
-                } catch {
-                    # Проверка на 412 (уже есть)
-                    if ($_.Exception.InnerException -and $_.Exception.InnerException.Response -and $_.Exception.InnerException.Response.StatusCode -eq 412) {
-                        throw "Файл уже существует в S3 (412 Precondition Failed)"
+                    # 1. Захват файла
+                    Rename-Item -Path $File.FullName -NewName "$BaseName.processing" -ErrorAction Stop
+                    Write-Log "Обработка: $OriginalName"
+
+                    # 2. Подготовка тела запроса
+                    $Payload = @{
+                        file_name = $OriginalName
+                        folder    = $S3Folder.Trim()
+                    }
+                    $JsonBody = $Payload | ConvertTo-Json -Compress
+
+                    # 3. Запрос ссылки
+                    Write-Log "Запрос ссылки загрузки для $OriginalName..."
+                    $Response = Invoke-RestMethod -Method Post `
+                                                 -Uri $Url `
+                                                 -Body $JsonBody `
+                                                 -ContentType "application/json; charset=utf-8" `
+                                                 -UserAgent $UserAgent
+
+                    $UploadUrl = $Response.upload_url
+
+                    # 4. Загрузка в S3 с ретраями
+                    $S3Headers = @{
+                        "If-None-Match" = "*"
                     }
 
-                    $RetryCount++
-                    Write-Log "Попытка загрузки $RetryCount не удалась: $($_.Exception.Message). Ждем 2 сек..." "WARN"
-                    Start-Sleep -Seconds 2
+                    $MaxRetries = 3
+                    $RetryCount = 0
+                    $Success = $false
+
+                    while (-not $Success -and $RetryCount -lt $MaxRetries) {
+                        try {
+                            Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/octet-stream" -Headers $S3Headers -UserAgent $UserAgent
+                            $Success = $true
+                        } catch {
+                            if ($_.Exception.InnerException -and $_.Exception.InnerException.Response -and $_.Exception.InnerException.Response.StatusCode -eq 412) {
+                                throw "Файл уже существует в S3 (412 Precondition Failed)"
+                            }
+
+                            $RetryCount++
+                            Write-Log "Попытка загрузки $RetryCount не удалась: $($_.Exception.Message). Ждем 2 сек..." "WARN"
+                            Start-Sleep -Seconds 2
+                        }
+                    }
+
+                    if (-not $Success) { throw "Не удалось загрузить файл после $MaxRetries попыток." }
+
+                    # 5. Финализация
+                    if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
+                    Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction Stop
+                    Write-Log "Успешно загружено: $OriginalName (S3 Key: $($Response.key))"
+
+                } catch {
+                    $ErrMsg = $_.Exception.Message
+                    Write-Log "Ошибка при обработке $OriginalName : $ErrMsg" "ERROR"
+
+                    if (Test-Path $ProcessingFile) {
+                        try {
+                            if ($ErrMsg -like "*412*") {
+                                if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
+                                Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction SilentlyContinue
+                            } else {
+                                Rename-Item -Path $ProcessingFile -NewName $OriginalName -ErrorAction SilentlyContinue
+                            }
+                        } catch {}
+                    }
                 }
             }
-
-            if (-not $Success) { throw "Не удалось загрузить файл после $MaxRetries попыток." }
-
-            # 5. Финализация
-            if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
-            Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction Stop
-            Write-Log "Успешно загружено: $OriginalName (S3 Key: $($Response.key))"
-
-        } catch {
-            $ErrMsg = $_.Exception.Message
-            Write-Log "Ошибка при обработке $OriginalName : $ErrMsg" "ERROR"
-
-            if (Test-Path $ProcessingFile) {
-                try {
-                    # Если ошибка 412, переименовываем в .uploaded чтобы больше не дергать,
-                    # либо оставляем как есть. В данном случае лучше пометить как uploaded чтобы не зацикливаться.
-                    if ($ErrMsg -like "*412*") {
-                        if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
-                        Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction SilentlyContinue
-                    } else {
-                        Rename-Item -Path $ProcessingFile -NewName $OriginalName -ErrorAction SilentlyContinue
-                    }
-                } catch {}
-            }
         }
+
+        Start-Sleep -Seconds $LoopDelaySeconds
     }
 
 } finally {
