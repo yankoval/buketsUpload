@@ -11,13 +11,15 @@ $FunctionUrl = "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19"
 $LogFile = Join-Path $LocalPath "download_worker_log.txt"
 $LockFile = Join-Path $LocalPath "download_script.lock"
 
-# Очистка URL от возможных скрытых символов и пробелов
+# Очистка URL и настройка безопасности
 $CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
 $CleanUrl = $CleanUrl.Trim()
 
-# Пропускать ошибки SSL и форсировать TLS 1.2
+# Пропускать ошибки SSL и настраивать протоколы
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+
+$UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
 function Write-Log($Message, $Level = "INFO") {
     $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -49,7 +51,7 @@ try {
     }
     try {
         Write-Log "Запрос списка файлов из S3..."
-        $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8"
+        $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
     } catch {
         Write-Log "Ошибка получения списка файлов: $($_.Exception.Message)" "ERROR"
         exit
@@ -60,7 +62,6 @@ try {
         exit
     }
 
-    # Обеспечиваем массив
     $Items = @($RawItems)
     Write-Log "Получено объектов из S3: $($Items.Count)"
 
@@ -68,18 +69,10 @@ try {
         $S3Key = $Item.name
         $Type = $Item.type
 
-        Write-Log "Объект в S3: $S3Key (Тип: $Type)"
+        if ($Type -ne "file") { continue }
 
-        if ($Type -ne "file") {
-            continue
-        }
-
-        # Получаем имя файла (последняя часть после слеша)
         $FileName = $S3Key.Split('/')[-1]
-        if ([string]::IsNullOrWhiteSpace($FileName)) {
-            Write-Log "Не удалось извлечь имя файла из ключа $S3Key" "WARN"
-            continue
-        }
+        if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
         # 2. Фильтр по маске
         $Match = $false
@@ -87,23 +80,20 @@ try {
             if ($FileName -like $Mask) { $Match = $true; break }
         }
 
-        if (-not $Match) {
-            Write-Log "Файл $FileName не соответствует маскам: $($FileMasks -join ', ')"
-            continue
-        }
+        if (-not $Match) { continue }
 
         # 3. Фильтр по тегам
         $DownloadStatus = $null
         if ($Item.tags -and $Item.tags.downloadStatus) {
-            $DownloadStatus = $Item.tags.downloadStatus
+            $DownloadStatus = [string]$Item.tags.downloadStatus
         }
 
         if ($DownloadStatus -eq "downloaded" -or $DownloadStatus -eq "downloading") {
-            Write-Log "Файл $FileName уже в процессе или скачан (Статус: $DownloadStatus)"
+            Write-Log "Файл $FileName пропущен (статус: $DownloadStatus)"
             continue
         }
 
-        Write-Log "Найдено для скачивания: $FileName (S3 Key: $S3Key, Текущий статус: $($DownloadStatus -or 'нет'))"
+        Write-Log "Найдено для скачивания: $FileName (S3 Key: $S3Key, Статус: $($DownloadStatus -or 'нет'))"
 
         try {
             # 4. Устанавливаем статус 'downloading'
@@ -113,25 +103,25 @@ try {
                 tag_key = "downloadStatus"
                 tag_value = "downloading"
             }
-            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" | Out-Null
+            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
 
             # 5. Получаем ссылку на скачивание
             Write-Log "Получение ссылки скачивания для $FileName..."
             $BodyDown = @{
                 download = $S3Key
             }
-            $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8"
+            $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
             $DownloadUrl = $DownloadResponse.download_url
 
             if (!$DownloadUrl) {
                 throw "API не вернуло ссылку на скачивание (download_url)."
             }
 
-            # 6. Скачиваем файл
+            # 6. Скачиваем файл (Используем Invoke-RestMethod для скачивания во избежание проблем с потоками)
             $TargetFile = Join-Path $LocalPath $FileName
             Write-Log "Скачивание файла..."
-            Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetFile
-            Write-Log "Успешно скачано в $TargetFile"
+            Invoke-RestMethod -Uri $DownloadUrl -OutFile $TargetFile -UserAgent $UserAgent
+            Write-Log "Успешно скачано: $FileName"
 
             # 7. Устанавливаем статус 'downloaded'
             Write-Log "Установка статуса 'downloaded' для $FileName..."
@@ -140,18 +130,17 @@ try {
                 tag_key = "downloadStatus"
                 tag_value = "downloaded"
             }
-            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySetEnd | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" | Out-Null
-            Write-Log "Статус успешно обновлен."
+            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySetEnd | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
+            Write-Log "Статус обновлен."
 
         } catch {
             Write-Log "Ошибка при обработке $FileName : $($_.Exception.Message)" "ERROR"
             try {
-                # Сброс статуса для возможности повторной попытки
                 $BodyReset = @{
                     remove_tag = $S3Key
                     tag_key = "downloadStatus"
                 }
-                Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyReset | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" | Out-Null
+                Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyReset | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
             } catch {}
         }
     }

@@ -12,13 +12,15 @@ $FunctionUrl = "https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19"
 $LogFile = Join-Path $MonitorPath "worker_log.txt"
 $LockFile = Join-Path $MonitorPath "script.lock"
 
-# Очистка URL от возможных скрытых символов и пробелов
+# Очистка URL и настройка безопасности
 $CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
 $CleanUrl = $CleanUrl.Trim()
 
-# Пропускать ошибки SSL и форсировать TLS 1.2
+# Пропускать ошибки SSL и настраивать протоколы
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+
+$UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
 function Write-Log($Message, $Level = "INFO") {
     $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -48,6 +50,8 @@ try {
         exit
     }
 
+    $Url = [Uri]$CleanUrl
+
     foreach ($File in $Files) {
         $OriginalName = $File.Name
         $BaseName = $File.BaseName
@@ -67,11 +71,12 @@ try {
             $JsonBody = $Payload | ConvertTo-Json -Compress
 
             # 3. Запрос ссылки
-            Write-Log "Запрос ссылки загрузки..."
+            Write-Log "Запрос ссылки загрузки для $OriginalName..."
             $Response = Invoke-RestMethod -Method Post `
-                                         -Uri $CleanUrl `
+                                         -Uri $Url `
                                          -Body $JsonBody `
-                                         -ContentType "application/json; charset=utf-8"
+                                         -ContentType "application/json; charset=utf-8" `
+                                         -UserAgent $UserAgent
 
             $UploadUrl = $Response.upload_url
 
@@ -79,7 +84,7 @@ try {
             $S3Headers = @{
                 "If-None-Match" = "*"
             }
-            Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/json" -Headers $S3Headers
+            Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/json" -Headers $S3Headers -UserAgent $UserAgent
 
             # 5. Финализация
             if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
