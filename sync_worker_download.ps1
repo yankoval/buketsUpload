@@ -56,6 +56,9 @@ try {
 
     while ($true) {
         try {
+            # Обеспечиваем наличие локальной папки
+            if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
+
             # 1. Получаем список файлов из S3
             $Body = @{
                 list = "true"
@@ -113,12 +116,9 @@ try {
 
                         if (!$DownloadUrl) { throw "API не вернуло ссылку на скачивание." }
 
-                        # 6. Скачиваем файл
+                        # 6. Скачиваем файл (Используем Invoke-WebRequest для большей стабильности)
                         $TargetFile = Join-Path $LocalPath $FileName
                         Write-Log "Скачивание файла в $TargetFile..."
-
-                        $wc = New-Object System.Net.WebClient
-                        $wc.Headers.Add("User-Agent", $UserAgent)
 
                         $MaxRetries = 3
                         $RetryCount = 0
@@ -126,11 +126,13 @@ try {
 
                         while (-not $Success -and $RetryCount -lt $MaxRetries) {
                             try {
-                                $wc.DownloadFile($DownloadUrl, $TargetFile)
+                                Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetFile -UserAgent $UserAgent -ErrorAction Stop
                                 $Success = $true
                             } catch {
                                 $RetryCount++
-                                Write-Log "Попытка $RetryCount не удалась: $($_.Exception.Message). Ждем 2 сек..." "WARN"
+                                $InnerMsg = ""
+                                if ($_.Exception.InnerException) { $InnerMsg = " | Inner: " + $_.Exception.InnerException.Message }
+                                Write-Log "Попытка $RetryCount не удалась: $($_.Exception.Message)$InnerMsg. Ждем 2 сек..." "WARN"
                                 Start-Sleep -Seconds 2
                             }
                         }
@@ -150,7 +152,9 @@ try {
                         Write-Log "Статус обновлен."
 
                     } catch {
-                        Write-Log "Ошибка при обработке $FileName : $($_.Exception.Message)" "ERROR"
+                        $ErrMsg = $_.Exception.Message
+                        if ($_.Exception.InnerException) { $ErrMsg += " | Inner: " + $_.Exception.InnerException.Message }
+                        Write-Log "Ошибка при обработке $FileName : $ErrMsg" "ERROR"
                         try {
                             $BodyReset = @{
                                 remove_tag = $S3Key

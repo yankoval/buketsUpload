@@ -108,7 +108,9 @@ try {
                                     throw "Файл уже существует в S3 (412 Precondition Failed)"
                                 }
                                 $RetryCount++
-                                Write-Log "Попытка загрузки $RetryCount не удалась: $($_.Exception.Message). Ждем 2 сек..." "WARN"
+                                $InnerMsg = ""
+                                if ($_.Exception.InnerException) { $InnerMsg = " | Inner: " + $_.Exception.InnerException.Message }
+                                Write-Log "Попытка загрузки $RetryCount не удалась: $($_.Exception.Message)$InnerMsg. Ждем 2 сек..." "WARN"
                                 Start-Sleep -Seconds 2
                             }
                         }
@@ -122,6 +124,7 @@ try {
 
                     } catch {
                         $ErrMsg = $_.Exception.Message
+                        if ($_.Exception.InnerException) { $ErrMsg += " | Inner: " + $_.Exception.InnerException.Message }
                         Write-Log "Ошибка при обработке $OriginalName : $ErrMsg" "ERROR"
 
                         if (Test-Path $ProcessingFile) {
@@ -138,7 +141,9 @@ try {
                 }
             }
         } catch {
-            Write-Log "Ошибка в основном цикле обработки: $($_.Exception.Message)" "ERROR"
+            $ErrMsgMain = $_.Exception.Message
+            if ($_.Exception.InnerException) { $ErrMsgMain += " | Inner: " + $_.Exception.InnerException.Message }
+            Write-Log "Ошибка в основном цикле обработки: $ErrMsgMain" "ERROR"
         }
 
         Start-Sleep -Seconds $LoopDelaySeconds
