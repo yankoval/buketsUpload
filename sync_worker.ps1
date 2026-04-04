@@ -1,4 +1,4 @@
-param (
+﻿param (
     [Parameter(Mandatory=$true, HelpMessage="Укажите папку в S3 (для корня введите пустые кавычки '')")]
     [AllowEmptyString()]
     [string]$S3Folder,

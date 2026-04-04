@@ -1,9 +1,9 @@
-param (
+﻿param (
     [Parameter(Mandatory=$true, HelpMessage="Укажите папку в S3 (например 'docs/')")]
     [string]$S3Folder,
 
     [string]$LocalPath = "C:\Downloads\S3Sync",
-    [string[]]$FileMasks = @("*.vdf", "*.csv"),
+    [string[]]$FileMasks = @("*.csv", "*.vdf"),
 
     [int]$LoopDelaySeconds = 15
 )
@@ -85,6 +85,16 @@ try {
                         if ($FileName -like $Mask) { $Match = $true; break }
                     }
                     if (-not $Match) { continue }
+
+                    # 2a. Логика зависимостей: VDF требует наличия локального CSV
+                    if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $BaseName = $FileName.Substring(0, $FileName.Length - 4)
+                        $ExpectedCsv = Join-Path $LocalPath "$BaseName.csv"
+                        if (-not (Test-Path $ExpectedCsv)) {
+                            # CSV еще нет, пропускаем этот VDF до следующей итерации
+                            continue
+                        }
+                    }
 
                     # 3. Фильтр по тегам
                     $DownloadStatus = $null
