@@ -19,7 +19,8 @@ $CleanUrl = $CleanUrl.Trim()
 
 # Пропускать ошибки SSL и настраивать протоколы
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+[Net.SecurityProtocolType]$TlsProtocols = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+[Net.ServicePointManager]::SecurityProtocol = $TlsProtocols
 
 $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
@@ -33,26 +34,33 @@ function Write-Log($Message, $Level = "INFO") {
     } catch {}
 }
 
-# --- ПРОВЕРКА LOCK-ФАЙЛА ---
-if (Test-Path $LockFile) {
-    Write-Log "Скрипт уже запущен или заблокирован файлом $LockFile" "WARN"
+# --- НАДЕЖНАЯ ПРОВЕРКА LOCK-ФАЙЛА ---
+$LockStream = $null
+try {
+    if (Test-Path $LockFile) {
+        Remove-Item $LockFile -ErrorAction SilentlyContinue
+        if (Test-Path $LockFile) {
+            Write-Log "Скрипт уже запущен (лок-файл $LockFile заблокирован другим процессом)." "WARN"
+            exit
+        }
+    }
+    $LockStream = [System.IO.File]::Open($LockFile, 'OpenOrCreate', 'Read', 'None')
+} catch {
+    Write-Log "Не удалось захватить лок-файл: $($_.Exception.Message). Возможно, скрипт уже запущен." "WARN"
     exit
 }
 
 try {
-    if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
-    New-Item -Path $LockFile -ItemType File -Force | Out-Null
     Write-Log "Старт мониторинга S3 (цикл $LoopDelaySeconds сек). Папка: '$S3Folder'. Локальный путь: '$LocalPath'"
-
     $Url = [Uri]$CleanUrl
 
     while ($true) {
-        # 1. Получаем список файлов из S3
-        $Body = @{
-            list = "true"
-            folder = $S3Folder.Trim()
-        }
         try {
+            # 1. Получаем список файлов из S3
+            $Body = @{
+                list = "true"
+                folder = $S3Folder.Trim()
+            }
             $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
 
             if ($null -ne $RawItems) {
@@ -64,7 +72,7 @@ try {
 
                     if ($Type -ne "file") { continue }
 
-                    # Получаем имя файла (последняя часть после слеша)
+                    # Получаем имя файла
                     $FileName = $S3Key.Split('/')[-1]
                     if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
@@ -73,7 +81,6 @@ try {
                     foreach ($Mask in $FileMasks) {
                         if ($FileName -like $Mask) { $Match = $true; break }
                     }
-
                     if (-not $Match) { continue }
 
                     # 3. Фильтр по тегам
@@ -100,15 +107,11 @@ try {
 
                         # 5. Получаем ссылку на скачивание
                         Write-Log "Получение ссылки скачивания для $FileName..."
-                        $BodyDown = @{
-                            download = $S3Key
-                        }
+                        $BodyDown = @{ download = $S3Key }
                         $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
                         $DownloadUrl = $DownloadResponse.download_url
 
-                        if (!$DownloadUrl) {
-                            throw "API не вернуло ссылку на скачивание (download_url)."
-                        }
+                        if (!$DownloadUrl) { throw "API не вернуло ссылку на скачивание." }
 
                         # 6. Скачиваем файл
                         $TargetFile = Join-Path $LocalPath $FileName
@@ -159,15 +162,19 @@ try {
                 }
             }
         } catch {
-            Write-Log "Ошибка получения списка файлов или доступа к API: $($_.Exception.Message)" "ERROR"
+            Write-Log "Ошибка в основном цикле скачивания: $($_.Exception.Message)" "ERROR"
         }
 
         Start-Sleep -Seconds $LoopDelaySeconds
     }
 
 } finally {
-    if (Test-Path $LockFile) {
-        Remove-Item $LockFile
-        Write-Log "Завершение работы, lock-файл удален."
+    if ($null -ne $LockStream) {
+        $LockStream.Close()
+        $LockStream.Dispose()
     }
+    if (Test-Path $LockFile) {
+        Remove-Item $LockFile -ErrorAction SilentlyContinue
+    }
+    Write-Log "Скрипт завершил работу."
 }
