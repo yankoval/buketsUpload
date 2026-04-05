@@ -5,8 +5,10 @@
     [Parameter(Mandatory=$true, HelpMessage="Укажите локальный путь для скачивания (например 'C:\Downloads\S3Sync')")]
     [string]$LocalPath,
 
+    [Parameter(Mandatory=$false)]
     [string[]]$FileMasks = @("*.csv", "*.vdf"),
 
+    [Parameter(Mandatory=$false)]
     [int]$LoopDelaySeconds = 15
 )
 
@@ -125,7 +127,6 @@ try {
 
 # Функция извлечения UUID из имени файла
 function Get-FileUuid($FileName) {
-    # Регулярка для стандартного UUID
     if ($FileName -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
         return $Matches[1]
     }
@@ -145,7 +146,9 @@ try {
             $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
 
             if ($null -ne $RawItems) {
-                # Оптимизация: Карта UUID -> S3Object для CSV файлов
+                $S3ItemsMap = @{}
+                foreach ($item in $RawItems) { $S3ItemsMap[$item.name] = $item }
+
                 $CsvUuidMap = @{}
                 foreach ($item in $RawItems) {
                     if ($item.type -eq "file" -and $item.name.EndsWith(".csv", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -154,16 +157,13 @@ try {
                     }
                 }
 
-                # Сортируем элементы по имени
-                $Items = @($RawItems) | Sort-Object -Property name
-
-                # Кеш отсутствующих CSV для текущей итерации
+                $SortedKeys = $S3ItemsMap.Keys | Sort-Object
                 $MissingCsvUuidCache = @{}
 
-                foreach ($Item in $Items) {
+                foreach ($S3Key in $SortedKeys) {
+                    $Item = $S3ItemsMap[$S3Key]
                     if ($Item.type -ne "file") { continue }
 
-                    $S3Key = $Item.name
                     $FileName = $S3Key.Split('/')[-1]
                     if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
@@ -182,15 +182,12 @@ try {
                     if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
                         $Uuid = Get-FileUuid $FileName
                         if ($Uuid) {
-                            # Проверяем локально наличие CSV с таким UUID
                             $LocalCsvs = Get-ChildItem -Path $LocalPath -Filter "*${Uuid}*.csv" -ErrorAction SilentlyContinue
 
                             if ($null -eq $LocalCsvs -or $LocalCsvs.Count -eq 0) {
                                 if ($MissingCsvUuidCache.ContainsKey($Uuid)) { continue }
 
-                                # Ищем CSV в S3 по UUID
                                 $CsvItem = $CsvUuidMap[$Uuid]
-
                                 if ($CsvItem) {
                                     Write-Log "VDF ${FileName} требует CSV. Принудительное скачивание CSV с UUID ${Uuid}: $($CsvItem.name)"
                                     Download-S3File -Item $CsvItem -Url $Url -UserAgent $UserAgent | Out-Null
@@ -200,7 +197,6 @@ try {
                                     continue
                                 }
 
-                                # Проверяем снова локально
                                 $LocalCsvsCheck = Get-ChildItem -Path $LocalPath -Filter "*${Uuid}*.csv" -ErrorAction SilentlyContinue
                                 if ($null -eq $LocalCsvsCheck -or $LocalCsvsCheck.Count -eq 0) {
                                     Write-Log "Не удалось получить CSV для UUID ${Uuid}. Пропуск VDF ${FileName}." "WARN"

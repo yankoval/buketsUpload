@@ -1,11 +1,15 @@
-﻿﻿param (
+﻿param (
     [Parameter(Mandatory=$true, HelpMessage="Укажите папку в S3 (для корня введите пустые кавычки '')")]
     [AllowEmptyString()]
     [string]$S3Folder,
 
+    [Parameter(Mandatory=$false)]
     [string]$MonitorPath = "\\10.0.22.248\1c_exchange\BatchPassToPrint\tst",
+
+    [Parameter(Mandatory=$false)]
     [string]$FileMask = "*.json",
 
+    [Parameter(Mandatory=$false)]
     [int]$LoopDelaySeconds = 15
 )
 
@@ -56,12 +60,15 @@ function Write-Log($Message, $Level = "INFO") {
 $LockStream = $null
 try {
     if (Test-Path $LockFile) {
+        # Пытаемся удалить. Если файл открыт другим процессом, это вызовет ошибку или файл останется на месте.
         Remove-Item $LockFile -ErrorAction SilentlyContinue
         if (Test-Path $LockFile) {
             Write-Log "Скрипт уже запущен (лок-файл $LockFile заблокирован другим процессом)." "WARN"
             exit
         }
     }
+
+    # Создаем/открываем файл и захватываем его монопольно (FileShare.None)
     $LockStream = [System.IO.File]::Open($LockFile, 'OpenOrCreate', 'Read', 'None')
 } catch {
     Write-Log "Не удалось захватить лок-файл: $($_.Exception.Message). Возможно, скрипт уже запущен." "WARN"
