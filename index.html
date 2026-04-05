@@ -51,6 +51,21 @@
             font-size: 1.1rem;
             line-height: 1;
         }
+        .remove-tag-btn:disabled {
+            color: #9e9e9e;
+            cursor: not-allowed;
+        }
+        .sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+        .sortable:hover {
+            background-color: #eee;
+        }
+        .sort-icon {
+            font-size: 0.8rem;
+            margin-left: 4px;
+        }
         .upload-section {
             background: #f9f9f9;
             padding: 1rem;
@@ -143,7 +158,11 @@
         <div class="filter-controls">
             <input type="text" id="filter-key" placeholder="Tag Key (e.g. status)">
             <input type="text" id="filter-val" placeholder="Tag Value (e.g. error)">
-            <button onclick="addManualFilter()">Add Filter</button>
+            <button onclick="addManualFilter()">Add Tag Filter</button>
+        </div>
+        <div class="filter-controls">
+            <input type="text" id="filter-name" placeholder="Name Filter (regex)" oninput="updateNameFilter(this.value)">
+            <input type="text" id="filter-date" placeholder="Last Modified Filter (regex)" oninput="updateDateFilter(this.value)">
         </div>
         <div id="active-filters"></div>
         <small style="color: #666;">Click on a tag in the table to quickly add a filter.</small>
@@ -155,9 +174,9 @@
     <table id="file-table" style="display:none;">
         <thead>
             <tr>
-                <th>Name</th>
+                <th class="sortable" onclick="toggleSort('name')">Name <span id="sort-name" class="sort-icon"></span></th>
                 <th>Size</th>
-                <th>Last Modified</th>
+                <th class="sortable" onclick="toggleSort('last_modified')">Last Modified <span id="sort-last_modified" class="sort-icon"></span></th>
                 <th>Tags</th>
                 <th>Action</th>
             </tr>
@@ -169,6 +188,9 @@
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
         let allowedTags = ['error', 'finished'];
         let activeFilters = {}; // { key: [values] }
+        let nameFilter = '';
+        let dateFilter = '';
+        let sortConfig = { key: null, order: null }; // order: 'asc', 'desc', null
 
         let configLoaded = false;
         async function fetchConfig() {
@@ -192,25 +214,78 @@
             }
         }
 
-        function loadFilters() {
+        function loadSettings() {
             const folder = getCurrentFolder();
-            const saved = localStorage.getItem(`filters_${folder}`);
-            if (saved) {
-                try {
-                    activeFilters = JSON.parse(saved);
-                } catch (e) {
-                    activeFilters = {};
-                }
-            } else {
-                activeFilters = {};
-            }
+
+            // Load Tags Filters
+            const savedFilters = localStorage.getItem(`filters_${folder}`);
+            if (savedFilters) {
+                try { activeFilters = JSON.parse(savedFilters); } catch (e) { activeFilters = {}; }
+            } else { activeFilters = {}; }
+
+            // Load Name/Date Filters
+            nameFilter = localStorage.getItem(`nameFilter_${folder}`) || '';
+            dateFilter = localStorage.getItem(`dateFilter_${folder}`) || '';
+            document.getElementById('filter-name').value = nameFilter;
+            document.getElementById('filter-date').value = dateFilter;
+
+            // Load Sort
+            const savedSort = localStorage.getItem(`sort_${folder}`);
+            if (savedSort) {
+                try { sortConfig = JSON.parse(savedSort); } catch (e) { sortConfig = { key: null, order: null }; }
+            } else { sortConfig = { key: null, order: null }; }
+
             updateFilterUI();
+            updateSortUI();
         }
 
-        function saveFilters() {
+        function saveSettings() {
             const folder = getCurrentFolder();
             localStorage.setItem(`filters_${folder}`, JSON.stringify(activeFilters));
+            localStorage.setItem(`nameFilter_${folder}`, nameFilter);
+            localStorage.setItem(`dateFilter_${folder}`, dateFilter);
+            localStorage.setItem(`sort_${folder}`, JSON.stringify(sortConfig));
             updateFilterUI();
+            updateSortUI();
+        }
+
+        function updateNameFilter(val) {
+            nameFilter = val;
+            saveSettings();
+            fetchItems();
+        }
+
+        function updateDateFilter(val) {
+            dateFilter = val;
+            saveSettings();
+            fetchItems();
+        }
+
+        function toggleSort(key) {
+            if (sortConfig.key === key) {
+                if (sortConfig.order === 'asc') sortConfig.order = 'desc';
+                else if (sortConfig.order === 'desc') {
+                    sortConfig.order = null;
+                    sortConfig.key = null;
+                }
+            } else {
+                sortConfig.key = key;
+                sortConfig.order = 'asc';
+            }
+            saveSettings();
+            fetchItems();
+        }
+
+        function updateSortUI() {
+            const sortName = document.getElementById('sort-name');
+            const sortDate = document.getElementById('sort-last_modified');
+            if (sortName) sortName.textContent = '';
+            if (sortDate) sortDate.textContent = '';
+            if (sortConfig.key) {
+                const icon = sortConfig.order === 'asc' ? '↑' : '↓';
+                const el = document.getElementById(`sort-${sortConfig.key}`);
+                if (el) el.textContent = icon;
+            }
         }
 
         function addManualFilter() {
@@ -256,7 +331,7 @@
             if (!activeFilters[key]) activeFilters[key] = [];
             if (!activeFilters[key].includes(value)) {
                 activeFilters[key].push(value);
-                saveFilters();
+                saveSettings();
                 fetchItems();
             }
         }
@@ -265,14 +340,18 @@
             if (activeFilters[key]) {
                 activeFilters[key] = activeFilters[key].filter(v => v !== value);
                 if (activeFilters[key].length === 0) delete activeFilters[key];
-                saveFilters();
+                saveSettings();
                 fetchItems();
             }
         }
 
         function clearFilters() {
             activeFilters = {};
-            saveFilters();
+            nameFilter = '';
+            dateFilter = '';
+            document.getElementById('filter-name').value = '';
+            document.getElementById('filter-date').value = '';
+            saveSettings();
             fetchItems();
         }
 
@@ -302,7 +381,7 @@
             const currentFolder = getCurrentFolder();
             updateBreadcrumb(currentFolder);
             await fetchConfig();
-            loadFilters();
+            loadSettings();
 
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
@@ -323,7 +402,7 @@
 
                 let items = await response.json();
 
-                // Apply Filters
+                // Apply Tag Filters
                 const filterKeys = Object.keys(activeFilters);
                 if (filterKeys.length > 0) {
                     items = items.filter(item => {
@@ -335,6 +414,57 @@
                             if (!itemTagValue) return false;
                             return activeFilters[fk].includes(itemTagValue);
                         });
+                    });
+                }
+
+                // Apply Name Filter (Regex)
+                if (nameFilter) {
+                    try {
+                        const regex = new RegExp(nameFilter, 'i');
+                        items = items.filter(item => {
+                            if (item.type !== 'file') return true;
+                            const relativeName = item.name.replace(currentFolder, '');
+                            return regex.test(relativeName);
+                        });
+                    } catch (e) {
+                        console.error("Invalid Name Regex", e);
+                    }
+                }
+
+                // Apply Date Filter (Regex)
+                if (dateFilter) {
+                    try {
+                        const regex = new RegExp(dateFilter, 'i');
+                        items = items.filter(item => {
+                            if (item.type !== 'file') return true;
+                            const dateStr = new Date(item.last_modified).toLocaleString();
+                            return regex.test(dateStr);
+                        });
+                    } catch (e) {
+                        console.error("Invalid Date Regex", e);
+                    }
+                }
+
+                // Apply Sorting
+                if (sortConfig.key && sortConfig.order) {
+                    items.sort((a, b) => {
+                        // Keep folders always at the top, or maybe just sort files?
+                        // Usually folders and files are sorted separately or together.
+                        // Let's sort them together but we can decide.
+                        if (a.type === 'folder' && b.type !== 'folder') return -1;
+                        if (a.type !== 'folder' && b.type === 'folder') return 1;
+
+                        let valA = a[sortConfig.key];
+                        let valB = b[sortConfig.key];
+
+                        if (sortConfig.key === 'name') {
+                            valA = valA.toLowerCase();
+                            valB = valB.toLowerCase();
+                        }
+
+                        if (valA < valB) return sortConfig.order === 'asc' ? -1 : 1;
+                        if (valA > valB) return sortConfig.order === 'asc' ? 1 : -1;
+                        return 0;
                     });
                 }
 
@@ -395,17 +525,22 @@
                                 return s === k || s === v;
                             });
 
+                            const removeBtn = document.createElement('button');
+                            removeBtn.className = 'remove-tag-btn';
+                            removeBtn.innerHTML = '&times;';
+
                             if (isAllowed) {
-                                const removeBtn = document.createElement('button');
-                                removeBtn.className = 'remove-tag-btn';
-                                removeBtn.innerHTML = '&times;';
                                 removeBtn.title = `Remove tag ${key}`;
                                 removeBtn.onclick = (e) => {
                                     e.stopPropagation();
                                     removeTag(item.name, key);
                                 };
-                                tagSpan.appendChild(removeBtn);
+                            } else {
+                                removeBtn.disabled = true;
+                                removeBtn.title = `Tag "${key}" cannot be removed by configuration`;
+                                removeBtn.onclick = (e) => e.stopPropagation();
                             }
+                            tagSpan.appendChild(removeBtn);
                             tagsCell.appendChild(tagSpan);
                         });
                     } else {
