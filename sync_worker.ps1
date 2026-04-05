@@ -1,15 +1,8 @@
 ﻿﻿param (
-    [Parameter(Mandatory=$true)]
-    [string]$S3Folder,
-
-    [Parameter(Mandatory=$false)]
-    [string]$MonitorPath = "\\10.0.22.248\1c_exchange\BatchPassToPrint\tst",
-
-    [Parameter(Mandatory=$false)]
-    [string]$FileMask = "*.json",
-
-    [Parameter(Mandatory=$false)]
-    [int]$LoopDelaySeconds = 15
+    [Parameter(Mandatory=$true)] [string]$S3Folder,
+    [Parameter(Mandatory=$false)] [string]$MonitorPath = '\\10.0.22.248\1c_exchange\BatchPassToPrint\tst',
+    [Parameter(Mandatory=$false)] [string]$FileMask = '*.json',
+    [Parameter(Mandatory=$false)] [int]$LoopDelaySeconds = 15
 )
 
 # --- НАСТРОЙКИ ---
