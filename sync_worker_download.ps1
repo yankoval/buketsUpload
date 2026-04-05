@@ -18,7 +18,7 @@ $CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
 $CleanUrl = $CleanUrl.Trim()
 
 # --- SSL & TLS CONFIGURATION ---
-# Используем C# для коллбэка SSL, чтобы избежать ошибки "No runspace" в многопоточных вызовах WebClient/WebRequest
+# Используем C# для настройки SSL, чтобы избежать ошибки "No runspace" и проблем с делегатами в PS 5.1
 $CsharpCode = @"
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
@@ -26,12 +26,15 @@ public class TrustAllCertsPolicy {
     public static bool Check(object sender, X509Certificate certificate, X509Chain chain, System.Net.Security.SslPolicyErrors sslPolicyErrors) {
         return true;
     }
+    public static void SetPolicy() {
+        ServicePointManager.ServerCertificateValidationCallback = Check;
+    }
 }
 "@
 if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
     Add-Type -TypeDefinition $CsharpCode
 }
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [System.Net.Security.RemoteCertificateValidationCallback]::new([TrustAllCertsPolicy]::Check)
+[TrustAllCertsPolicy]::SetPolicy()
 
 [Net.SecurityProtocolType]$TlsProtocols = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
 [Net.ServicePointManager]::SecurityProtocol = $TlsProtocols
