@@ -551,7 +551,8 @@
                     if (item.type === 'file') {
                         const btn = document.createElement('button');
                         btn.className = 'download-btn';
-                        btn.textContent = 'Download';
+                        btn.innerHTML = '📥';
+                        btn.title = 'Download';
                         btn.onclick = () => downloadFile(item.name);
                         actionCell.appendChild(btn);
 
@@ -586,7 +587,14 @@
 
                 const data = await response.json();
                 if (data.download_url) {
+                    // Option 1: Trigger download and set tag immediately
                     window.location.href = data.download_url;
+
+                    // Set downloadStatus: downloaded
+                    const tagUrl = `${API_URL}?set_tag=${encodeURIComponent(filename)}&tag_key=downloadStatus&tag_value=downloaded`;
+                    fetch(tagUrl, { method: 'POST' }).then(r => {
+                        if (r.ok) fetchItems(); // Refresh to show new tag
+                    }).catch(e => console.error("Failed to set downloadStatus tag", e));
                 } else {
                     alert('Could not get download URL');
                 }
