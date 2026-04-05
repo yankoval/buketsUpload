@@ -2,7 +2,9 @@
     [Parameter(Mandatory=$true, HelpMessage="Укажите папку в S3 (например 'docs/')")]
     [string]$S3Folder,
 
-    [string]$LocalPath = "C:\Downloads\S3Sync",
+    [Parameter(Mandatory=$true, HelpMessage="Укажите локальный путь для скачивания (например 'C:\Downloads\S3Sync')")]
+    [string]$LocalPath,
+
     [string[]]$FileMasks = @("*.csv", "*.vdf"),
 
     [int]$LoopDelaySeconds = 15
