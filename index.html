@@ -19,10 +19,135 @@
         .error { color: #cc0000; font-weight: bold; }
         .size { color: #666; font-size: 0.9rem; }
         .icon { margin-right: 8px; }
+        .set-tag-btn {
+            cursor: pointer;
+            color: #4caf50;
+            background: none;
+            border: 1px solid #4caf50;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            margin-left: 8px;
+        }
+        .set-tag-btn:hover { background: #e8f5e9; }
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            background: #e1f5fe;
+            color: #01579b;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-right: 4px;
+        }
+        .remove-tag-btn {
+            cursor: pointer;
+            margin-left: 6px;
+            color: #d32f2f;
+            font-weight: bold;
+            border: none;
+            background: none;
+            padding: 0;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .upload-section {
+            background: #f9f9f9;
+            padding: 1rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 1.5rem;
+        }
+        .filter-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+        .filter-controls input {
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .filter-controls button {
+            background: #8bc34a;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .filter-controls button:hover { background: #7cb342; }
+        .upload-section input[type="file"] { margin-bottom: 10px; }
+        .upload-section button {
+            background: #4caf50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .upload-section button:hover { background: #45a049; }
+        .upload-section button:disabled { background: #ccc; cursor: not-allowed; }
+
+        .filter-section {
+            background: #f1f8e9;
+            padding: 1rem;
+            border: 1px solid #c5e1a5;
+            border-radius: 4px;
+            margin-bottom: 1.5rem;
+        }
+        .filter-chip {
+            display: inline-flex;
+            align-items: center;
+            background: #fff;
+            border: 1px solid #8bc34a;
+            color: #33691e;
+            padding: 4px 10px;
+            border-radius: 16px;
+            font-size: 0.9rem;
+            margin: 4px;
+            cursor: default;
+        }
+        .remove-filter-btn {
+            cursor: pointer;
+            margin-left: 8px;
+            color: #7cb342;
+            font-weight: bold;
+            border: none;
+            background: none;
+            padding: 0;
+            font-size: 1rem;
+        }
+        .filter-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+        .filter-header h3 { margin: 0; }
+        .clickable-tag { cursor: pointer; border: 1px solid transparent; transition: border 0.2s; }
+        .clickable-tag:hover { border-color: #0288d1; }
     </style>
 </head>
 <body>
     <h1>Bucket Browser</h1>
+
+    <div class="upload-section">
+        <h3>Upload File</h3>
+        <input type="file" id="file-input">
+        <button id="upload-btn" onclick="uploadFile()">Upload</button>
+        <div id="upload-status"></div>
+    </div>
+
+    <div class="filter-section" id="filter-section">
+        <div class="filter-header">
+            <h3>Filters</h3>
+            <button onclick="clearFilters()" style="font-size: 0.8rem;">Clear All</button>
+        </div>
+        <div class="filter-controls">
+            <input type="text" id="filter-key" placeholder="Tag Key (e.g. status)">
+            <input type="text" id="filter-val" placeholder="Tag Value (e.g. error)">
+            <button onclick="addManualFilter()">Add Filter</button>
+        </div>
+        <div id="active-filters"></div>
+        <small style="color: #666;">Click on a tag in the table to quickly add a filter.</small>
+    </div>
 
     <div id="breadcrumb" class="breadcrumb"></div>
     <div id="status"></div>
@@ -33,6 +158,7 @@
                 <th>Name</th>
                 <th>Size</th>
                 <th>Last Modified</th>
+                <th>Tags</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -41,23 +167,132 @@
 
     <script>
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
+        let allowedTags = ['error', 'finished'];
+        let activeFilters = {}; // { key: [values] }
 
-        // Get folder from URL parameter
+        let configLoaded = false;
+        async function fetchConfig() {
+            if (configLoaded) return;
+            try {
+                const response = await fetch(`${API_URL}?download=config/UI-conf.json`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.download_url) {
+                    const configResponse = await fetch(data.download_url);
+                    if (configResponse.ok) {
+                        const configData = await configResponse.json();
+                        if (configData && Array.isArray(configData.allowed_delete_tags)) {
+                            allowedTags = configData.allowed_delete_tags;
+                            configLoaded = true;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to fetch UI-conf.json, using defaults", e);
+            }
+        }
+
+        function loadFilters() {
+            const folder = getCurrentFolder();
+            const saved = localStorage.getItem(`filters_${folder}`);
+            if (saved) {
+                try {
+                    activeFilters = JSON.parse(saved);
+                } catch (e) {
+                    activeFilters = {};
+                }
+            } else {
+                activeFilters = {};
+            }
+            updateFilterUI();
+        }
+
+        function saveFilters() {
+            const folder = getCurrentFolder();
+            localStorage.setItem(`filters_${folder}`, JSON.stringify(activeFilters));
+            updateFilterUI();
+        }
+
+        function addManualFilter() {
+            const key = document.getElementById('filter-key').value.trim();
+            const val = document.getElementById('filter-val').value.trim();
+            if (key && val) {
+                addFilter(key, val);
+                document.getElementById('filter-key').value = '';
+                document.getElementById('filter-val').value = '';
+            } else {
+                alert('Both Tag Key and Tag Value are required.');
+            }
+        }
+
+        function updateFilterUI() {
+            const container = document.getElementById('active-filters');
+            container.innerHTML = '';
+
+            const keys = Object.keys(activeFilters);
+            if (keys.length === 0) {
+                container.innerHTML = '<p style="color: #666; font-style: italic;">No active filters.</p>';
+                return;
+            }
+
+            keys.forEach(key => {
+                activeFilters[key].forEach(val => {
+                    const chip = document.createElement('div');
+                    chip.className = 'filter-chip';
+                    chip.innerHTML = `<strong>${key}:</strong> ${val}`;
+
+                    const btn = document.createElement('button');
+                    btn.className = 'remove-filter-btn';
+                    btn.innerHTML = '&times;';
+                    btn.onclick = () => removeFilter(key, val);
+
+                    chip.appendChild(btn);
+                    container.appendChild(chip);
+                });
+            });
+        }
+
+        function addFilter(key, value) {
+            if (!activeFilters[key]) activeFilters[key] = [];
+            if (!activeFilters[key].includes(value)) {
+                activeFilters[key].push(value);
+                saveFilters();
+                fetchItems();
+            }
+        }
+
+        function removeFilter(key, value) {
+            if (activeFilters[key]) {
+                activeFilters[key] = activeFilters[key].filter(v => v !== value);
+                if (activeFilters[key].length === 0) delete activeFilters[key];
+                saveFilters();
+                fetchItems();
+            }
+        }
+
+        function clearFilters() {
+            activeFilters = {};
+            saveFilters();
+            fetchItems();
+        }
+
+        // Get folder from URL hash
         function getCurrentFolder() {
-            const params = new URLSearchParams(window.location.search);
+            const hash = window.location.hash.substring(1); // remove '#'
+            const params = new URLSearchParams(hash);
             return params.get('folder') || '';
         }
 
         function updateBreadcrumb(folder) {
             const breadcrumb = document.getElementById('breadcrumb');
-            let html = '<a href="?">Root</a>';
+            let html = '<a href="#">Root</a>';
 
             if (folder) {
                 const parts = folder.split('/').filter(p => p);
                 let path = '';
                 parts.forEach((part, index) => {
                     path += part + '/';
-                    html += ` / <a href="?folder=${encodeURIComponent(path)}">${part}</a>`;
+                    html += ` / <a href="#folder=${encodeURIComponent(path)}">${part}</a>`;
                 });
             }
             breadcrumb.innerHTML = html;
@@ -66,6 +301,8 @@
         async function fetchItems() {
             const currentFolder = getCurrentFolder();
             updateBreadcrumb(currentFolder);
+            await fetchConfig();
+            loadFilters();
 
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
@@ -84,7 +321,22 @@
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-                const items = await response.json();
+                let items = await response.json();
+
+                // Apply Filters
+                const filterKeys = Object.keys(activeFilters);
+                if (filterKeys.length > 0) {
+                    items = items.filter(item => {
+                        if (item.type !== 'file') return true;
+                        if (!item.tags) return false;
+
+                        return filterKeys.every(fk => {
+                            const itemTagValue = item.tags[fk];
+                            if (!itemTagValue) return false;
+                            return activeFilters[fk].includes(itemTagValue);
+                        });
+                    });
+                }
 
                 tbody.innerHTML = '';
 
@@ -93,8 +345,8 @@
                     const parentFolder = currentFolder.split('/').filter(p => p).slice(0, -1).join('/') + (currentFolder.includes('/') && currentFolder.split('/').filter(p => p).length > 1 ? '/' : '');
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td colspan="4">
-                            <a class="folder-link" href="?folder=${encodeURIComponent(parentFolder)}">
+                        <td colspan="5">
+                            <a class="folder-link" href="#folder=${encodeURIComponent(parentFolder)}">
                                 <span class="icon">📁</span>.. (Parent Directory)
                             </a>
                         </td>
@@ -114,7 +366,7 @@
                     if (item.type === 'folder') {
                         const link = document.createElement('a');
                         link.className = 'folder-link';
-                        link.href = `?folder=${encodeURIComponent(item.name)}`;
+                        link.href = `#folder=${encodeURIComponent(item.name)}`;
                         link.innerHTML = `<span class="icon">📁</span>${item.name.replace(currentFolder, '')}`;
                         nameCell.appendChild(link);
                     } else {
@@ -128,6 +380,38 @@
                     const dateCell = document.createElement('td');
                     dateCell.textContent = item.type === 'file' ? new Date(item.last_modified).toLocaleString() : '-';
 
+                    const tagsCell = document.createElement('td');
+                    if (item.type === 'file' && item.tags) {
+                        Object.entries(item.tags).forEach(([key, value]) => {
+                            const tagSpan = document.createElement('span');
+                            tagSpan.className = 'tag clickable-tag';
+                            tagSpan.textContent = `${key}: ${value}`;
+                            tagSpan.onclick = () => addFilter(key, value);
+
+                            const k = String(key).trim().toLowerCase();
+                            const v = String(value).trim().toLowerCase();
+                            const isAllowed = allowedTags.some(t => {
+                                const s = String(t).trim().toLowerCase();
+                                return s === k || s === v;
+                            });
+
+                            if (isAllowed) {
+                                const removeBtn = document.createElement('button');
+                                removeBtn.className = 'remove-tag-btn';
+                                removeBtn.innerHTML = '&times;';
+                                removeBtn.title = `Remove tag ${key}`;
+                                removeBtn.onclick = (e) => {
+                                    e.stopPropagation();
+                                    removeTag(item.name, key);
+                                };
+                                tagSpan.appendChild(removeBtn);
+                            }
+                            tagsCell.appendChild(tagSpan);
+                        });
+                    } else {
+                        tagsCell.textContent = '-';
+                    }
+
                     const actionCell = document.createElement('td');
                     if (item.type === 'file') {
                         const btn = document.createElement('button');
@@ -135,11 +419,18 @@
                         btn.textContent = 'Download';
                         btn.onclick = () => downloadFile(item.name);
                         actionCell.appendChild(btn);
+
+                        const setTagBtn = document.createElement('button');
+                        setTagBtn.className = 'set-tag-btn';
+                        setTagBtn.textContent = '+ Tag';
+                        setTagBtn.onclick = () => promptSetTag(item.name);
+                        actionCell.appendChild(setTagBtn);
                     }
 
                     row.appendChild(nameCell);
                     row.appendChild(sizeCell);
                     row.appendChild(dateCell);
+                    row.appendChild(tagsCell);
                     row.appendChild(actionCell);
                     tbody.appendChild(row);
                 });
@@ -170,6 +461,110 @@
             }
         }
 
+        async function removeTag(filename, tagKey) {
+            if (!confirm(`Are you sure you want to remove tag "${tagKey}" from ${filename}?`)) return;
+
+            try {
+                const url = `${API_URL}?remove_tag=${encodeURIComponent(filename)}&tag_key=${encodeURIComponent(tagKey)}`;
+                const response = await fetch(url, { method: 'POST' });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+                const result = await response.json();
+                if (result.success) {
+                    fetchItems(); // Refresh
+                } else {
+                    alert('Failed to remove tag: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Remove tag error:', error);
+                alert(`Error removing tag: ${error.message}`);
+            }
+        }
+
+        async function promptSetTag(filename) {
+            const tagKey = prompt("Enter tag key (e.g. status):");
+            if (!tagKey) return;
+            const tagValue = prompt(`Enter tag value for "${tagKey}":`);
+            if (tagValue === null) return;
+
+            try {
+                const url = `${API_URL}?set_tag=${encodeURIComponent(filename)}&tag_key=${encodeURIComponent(tagKey)}&tag_value=${encodeURIComponent(tagValue)}`;
+                const response = await fetch(url, { method: 'POST' });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+                const result = await response.json();
+                if (result.success) {
+                    fetchItems(); // Refresh
+                } else {
+                    alert('Failed to set tag: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Set tag error:', error);
+                alert(`Error setting tag: ${error.message}`);
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('file-input');
+            const statusDiv = document.getElementById('upload-status');
+            const uploadBtn = document.getElementById('upload-btn');
+
+            if (!fileInput.files.length) {
+                alert('Please select a file.');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const currentFolder = getCurrentFolder();
+
+            statusDiv.textContent = 'Getting upload URL...';
+            uploadBtn.disabled = true;
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        folder: currentFolder,
+                        file_name: file.name
+                    })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || `HTTP error! status: ${response.status}`);
+                }
+
+                const { upload_url } = await response.json();
+
+                statusDiv.textContent = 'Uploading...';
+                const uploadResponse = await fetch(upload_url, {
+                    method: 'PUT',
+                    body: file,
+                    headers: {
+                        'If-None-Match': '*'
+                    }
+                });
+
+                if (uploadResponse.status === 412) {
+                    statusDiv.textContent = 'Error: File already exists (Precondition Failed).';
+                    statusDiv.style.color = 'red';
+                } else if (!uploadResponse.ok) {
+                    throw new Error(`Upload failed with status: ${uploadResponse.status}`);
+                } else {
+                    statusDiv.textContent = 'Upload successful!';
+                    statusDiv.style.color = 'green';
+                    fileInput.value = '';
+                    fetchItems();
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                statusDiv.textContent = `Error: ${error.message}`;
+                statusDiv.style.color = 'red';
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        }
+
         function formatBytes(bytes, decimals = 2) {
             if (bytes === 0) return '0 Bytes';
             const k = 1024;
@@ -179,7 +574,7 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
         }
 
-        window.onpopstate = () => fetchItems();
+        window.onhashchange = () => fetchItems();
         fetchItems();
     </script>
 </body>
