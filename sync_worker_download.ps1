@@ -1,8 +1,8 @@
 ﻿param (
-    [Parameter(Mandatory=$true, HelpMessage="Укажите папку в S3 (например 'docs/')")]
+    [Parameter(Mandatory=$true)]
     [string]$S3Folder,
 
-    [Parameter(Mandatory=$true, HelpMessage="Укажите локальный путь для скачивания (например 'C:\Downloads\S3Sync')")]
+    [Parameter(Mandatory=$true)]
     [string]$LocalPath,
 
     [Parameter(Mandatory=$false)]
