@@ -77,6 +77,7 @@ try {
         try {
             if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
 
+            # 1. Получаем список файлов из S3
             $Body = @{
                 list = "true"
                 folder = $S3Folder.Trim()
@@ -84,7 +85,8 @@ try {
             $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
 
             if ($null -ne $RawItems) {
-                $Items = @($RawItems)
+                # Сортируем элементы по имени, чтобы CSV (алфавитно раньше VDF) шли первыми
+                $Items = @($RawItems) | Sort-Object -Property name
 
                 foreach ($Item in $Items) {
                     $S3Key = $Item.name
@@ -101,10 +103,13 @@ try {
                     }
                     if (-not $Match) { continue }
 
+                    # 2a. Логика зависимостей: VDF требует наличия локального CSV
                     if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
                         $BaseName = $FileName.Substring(0, $FileName.Length - 4)
                         $ExpectedCsv = Join-Path $LocalPath "$BaseName.csv"
                         if (-not (Test-Path $ExpectedCsv)) {
+                            # CSV еще нет, пропускаем этот VDF до следующей итерации
+                            Write-Log "Пропуск $FileName: соответствующий CSV ($BaseName.csv) еще не скачан." "DEBUG"
                             continue
                         }
                     }

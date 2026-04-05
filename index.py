@@ -74,44 +74,57 @@ def handler(event, context):
         if prefix and not prefix.endswith('/'):
             prefix += '/'
 
-        # 1. List files and subfolders
+        # 1. List files and subfolders (with pagination)
         is_list = str(params.get('list', '')).lower() in ('true', '1', 't', 'yes', 'y')
         if is_list:
-            response = s3_client.list_objects_v2(
+            paginator = s3_client.get_paginator('list_objects_v2')
+            page_iterator = paginator.paginate(
                 Bucket=bucket,
                 Prefix=prefix,
                 Delimiter='/'
             )
 
             items = []
-            if 'CommonPrefixes' in response:
-                for cp in response['CommonPrefixes']:
-                    items.append({
-                        'name': cp['Prefix'],
-                        'type': 'folder'
-                    })
+            folders = set()
 
-            if 'Contents' in response:
-                for obj in response['Contents']:
-                    if obj['Key'] == prefix:
-                        continue
+            for page in page_iterator:
+                # Add subfolders (CommonPrefixes)
+                if 'CommonPrefixes' in page:
+                    for cp in page['CommonPrefixes']:
+                        folders.add(cp['Prefix'])
 
-                    # Fetch tags for each file
-                    tagging = s3_client.get_object_tagging(Bucket=bucket, Key=obj['Key'])
-                    tags = {t['Key']: t['Value'] for t in tagging.get('TagSet', [])}
+                # Add files (Contents)
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        if obj['Key'] == prefix:
+                            continue
 
-                    items.append({
-                        'name': obj['Key'],
-                        'type': 'file',
-                        'size': obj['Size'],
-                        'last_modified': obj['LastModified'],
-                        'tags': tags
-                    })
+                        # Fetch tags for each file
+                        tagging = s3_client.get_object_tagging(Bucket=bucket, Key=obj['Key'])
+                        tags = {t['Key']: t['Value'] for t in tagging.get('TagSet', [])}
+
+                        items.append({
+                            'name': obj['Key'],
+                            'type': 'file',
+                            'size': obj['Size'],
+                            'last_modified': obj['LastModified'],
+                            'tags': tags
+                        })
+
+            # Format final response including folders
+            final_items = []
+            for f in sorted(list(folders)):
+                final_items.append({
+                    'name': f,
+                    'type': 'folder'
+                })
+
+            final_items.extend(items)
 
             return {
                 'statusCode': 200,
                 'headers': headers,
-                'body': json.dumps(items, default=datetime_handler)
+                'body': json.dumps(final_items, default=datetime_handler)
             }
 
         # 2. Set/Update tag
