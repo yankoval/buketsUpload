@@ -20,7 +20,6 @@ $CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
 $CleanUrl = $CleanUrl.Trim()
 
 # --- SSL & TLS CONFIGURATION ---
-# Используем C# для настройки SSL, чтобы избежать ошибки "No runspace" и проблем с делегатами в PS 5.1
 $CsharpCode = @"
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
@@ -53,6 +52,61 @@ function Write-Log($Message, $Level = "INFO") {
     } catch {}
 }
 
+# --- Внутренняя функция скачивания ---
+function Download-S3File($Item, $Url, $UserAgent) {
+    $S3Key = $Item.name
+    $FileName = $S3Key.Split('/')[-1]
+    $TargetFile = Join-Path $LocalPath $FileName
+
+    Write-Log "Скачивание файла: ${FileName} (S3 Key: $S3Key)"
+    try {
+        # 1. Установка статуса 'downloading'
+        $BodySet = @{ set_tag = $S3Key; tag_key = "downloadStatus"; tag_value = "downloading" }
+        Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
+
+        # 2. Получение ссылки
+        $BodyDown = @{ download = $S3Key }
+        $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
+        $DownloadUrl = $DownloadResponse.download_url
+        if (!$DownloadUrl) { throw "API не вернуло ссылку на скачивание." }
+
+        # 3. Физическое скачивание
+        $MaxRetries = 3
+        $RetryCount = 0
+        $Success = $false
+        while (-not $Success -and $RetryCount -lt $MaxRetries) {
+            try {
+                Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetFile -UserAgent $UserAgent -ErrorAction Stop
+                $Success = $true
+            } catch {
+                $RetryCount++
+                $InnerMsg = if ($_.Exception.InnerException) { " | Inner: " + $_.Exception.InnerException.Message } else { "" }
+                Write-Log "Попытка $RetryCount не удалась для ${FileName}: $($_.Exception.Message)$InnerMsg" "WARN"
+                Start-Sleep -Seconds 2
+            }
+        }
+        if (-not $Success) { throw "Не удалось скачать файл после $MaxRetries попыток." }
+
+        # 4. Установка статуса 'downloaded'
+        $BodySetEnd = @{ set_tag = $S3Key; tag_key = "downloadStatus"; tag_value = "downloaded" }
+        Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySetEnd | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
+
+        Write-Log "Успешно скачано и статус обновлен: ${FileName}"
+        return $true
+    } catch {
+        $ErrMsg = $_.Exception.Message
+        if ($_.Exception.InnerException) { $ErrMsg += " | Inner: " + $_.Exception.InnerException.Message }
+        Write-Log "Ошибка при скачивании ${FileName} : $ErrMsg" "ERROR"
+
+        # Сброс статуса при ошибке
+        try {
+            $BodyReset = @{ remove_tag = $S3Key; tag_key = "downloadStatus" }
+            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyReset | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
+        } catch {}
+        return $false
+    }
+}
+
 # --- НАДЕЖНАЯ ПРОВЕРКА LOCK-ФАЙЛА ---
 $LockStream = $null
 try {
@@ -78,120 +132,67 @@ try {
             if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
 
             # 1. Получаем список файлов из S3
-            $Body = @{
-                list = "true"
-                folder = $S3Folder.Trim()
-            }
+            $Body = @{ list = "true"; folder = $S3Folder.Trim() }
             $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
 
             if ($null -ne $RawItems) {
-                # Сортируем элементы по имени, чтобы CSV (алфавитно раньше VDF) шли первыми
+                # Сортируем элементы по имени, чтобы CSV шли первыми
                 $Items = @($RawItems) | Sort-Object -Property name
 
                 foreach ($Item in $Items) {
+                    if ($Item.type -ne "file") { continue }
+
                     $S3Key = $Item.name
-                    $Type = $Item.type
-
-                    if ($Type -ne "file") { continue }
-
                     $FileName = $S3Key.Split('/')[-1]
                     if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
+                    # Фильтр по маске
                     $Match = $false
-                    foreach ($Mask in $FileMasks) {
-                        if ($FileName -like $Mask) { $Match = $true; break }
-                    }
+                    foreach ($Mask in $FileMasks) { if ($FileName -like $Mask) { $Match = $true; break } }
                     if (-not $Match) { continue }
 
-                    # 2a. Логика зависимостей: VDF требует наличия локального CSV
+                    # Логика зависимостей: VDF требует наличия локального CSV
                     if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
                         $BaseName = $FileName.Substring(0, $FileName.Length - 4)
                         $ExpectedCsv = Join-Path $LocalPath "$BaseName.csv"
+
                         if (-not (Test-Path $ExpectedCsv)) {
-                            # CSV еще нет, пропускаем этот VDF до следующей итерации
-                            Write-Log "Пропуск ${FileName}: соответствующий CSV ($BaseName.csv) еще не скачан." "DEBUG"
-                            continue
+                            Write-Log "VDF ${FileName} требует CSV. Ищем соответствующий CSV в списке S3..."
+                            # Пытаемся найти CSV в списке из S3
+                            $CsvKey = $S3Key.Substring(0, $S3Key.Length - 4) + ".csv"
+                            $CsvItem = $Items | Where-Object { $_.name -eq $CsvKey }
+
+                            if ($CsvItem) {
+                                Write-Log "Принудительное скачивание CSV: $($CsvItem.name) для VDF ${FileName}"
+                                Download-S3File -Item $CsvItem -Url $Url -UserAgent $UserAgent | Out-Null
+                            } else {
+                                Write-Log "CSV файл для ${FileName} не найден в S3! Пропуск." "WARN"
+                                continue
+                            }
+
+                            # Проверяем снова
+                            if (-not (Test-Path $ExpectedCsv)) {
+                                Write-Log "Не удалось получить CSV для ${FileName}. Пропуск VDF." "WARN"
+                                continue
+                            }
                         }
                     }
 
-                    $DownloadStatus = $null
-                    if ($Item.tags -and $Item.tags.downloadStatus) {
-                        $DownloadStatus = [string]$Item.tags.downloadStatus
-                    }
-
+                    # Стандартная проверка тега
+                    $DownloadStatus = if ($Item.tags -and $Item.tags.downloadStatus) { [string]$Item.tags.downloadStatus } else { $null }
                     if ($DownloadStatus -eq "downloaded" -or $DownloadStatus -eq "downloading") {
                         continue
                     }
 
-                    Write-Log "Найдено для скачивания: ${FileName} (S3 Key: $S3Key, Статус: $($DownloadStatus -or 'нет'))"
-
-                    try {
-                        Write-Log "Установка статуса 'downloading' для ${FileName}..."
-                        $BodySet = @{
-                            set_tag = $S3Key
-                            tag_key = "downloadStatus"
-                            tag_value = "downloading"
-                        }
-                        Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
-
-                        Write-Log "Получение ссылки скачивания для ${FileName}..."
-                        $BodyDown = @{ download = $S3Key }
-                        $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
-                        $DownloadUrl = $DownloadResponse.download_url
-
-                        if (!$DownloadUrl) { throw "API не вернуло ссылку на скачивание." }
-
-                        $TargetFile = Join-Path $LocalPath $FileName
-                        Write-Log "Скачивание файла в $TargetFile..."
-
-                        $MaxRetries = 3
-                        $RetryCount = 0
-                        $Success = $false
-
-                        while (-not $Success -and $RetryCount -lt $MaxRetries) {
-                            try {
-                                Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetFile -UserAgent $UserAgent -ErrorAction Stop
-                                $Success = $true
-                            } catch {
-                                $RetryCount++
-                                $InnerMsg = ""
-                                if ($_.Exception.InnerException) { $InnerMsg = " | Inner: " + $_.Exception.InnerException.Message }
-                                Write-Log "Попытка $RetryCount не удалась: $($_.Exception.Message)$InnerMsg. Ждем 2 сек..." "WARN"
-                                Start-Sleep -Seconds 2
-                            }
-                        }
-
-                        if (-not $Success) { throw "Не удалось скачать файл после $MaxRetries попыток." }
-
-                        Write-Log "Успешно скачано: ${FileName}"
-
-                        Write-Log "Установка статуса 'downloaded' для ${FileName}..."
-                        $BodySetEnd = @{
-                            set_tag = $S3Key
-                            tag_key = "downloadStatus"
-                            tag_value = "downloaded"
-                        }
-                        Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySetEnd | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
-                        Write-Log "Статус обновлен."
-
-                    } catch {
-                        $ErrMsg = $_.Exception.Message
-                        if ($_.Exception.InnerException) { $ErrMsg += " | Inner: " + $_.Exception.InnerException.Message }
-                        Write-Log "Ошибка при обработке ${FileName} : $ErrMsg" "ERROR"
-                        try {
-                            $BodyReset = @{
-                                remove_tag = $S3Key
-                                tag_key = "downloadStatus"
-                            }
-                            Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyReset | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
-                        } catch {}
-                    }
+                    # Скачиваем файл
+                    Download-S3File -Item $Item -Url $Url -UserAgent $UserAgent | Out-Null
                 }
             }
         } catch {
             Write-Log "Ошибка в основном цикле скачивания: $($_.Exception.Message)" "ERROR"
         }
 
+        # Пауза перед следующим циклом
         Start-Sleep -Seconds $LoopDelaySeconds
     }
 
