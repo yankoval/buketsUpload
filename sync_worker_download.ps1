@@ -146,12 +146,18 @@ try {
                     $FileName = $S3Key.Split('/')[-1]
                     if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
-                    # Фильтр по маске
+                    # 1. Фильтр по маске
                     $Match = $false
                     foreach ($Mask in $FileMasks) { if ($FileName -like $Mask) { $Match = $true; break } }
                     if (-not $Match) { continue }
 
-                    # Логика зависимостей: VDF требует наличия локального CSV
+                    # 2. Стандартная проверка тега (Важно сделать ПЕРЕД зависимостями)
+                    $DownloadStatus = if ($Item.tags -and $Item.tags.downloadStatus) { [string]$Item.tags.downloadStatus } else { $null }
+                    if ($DownloadStatus -eq "downloaded" -or $DownloadStatus -eq "downloading") {
+                        continue
+                    }
+
+                    # 3. Логика зависимостей: VDF требует наличия локального CSV
                     if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
                         $BaseName = $FileName.Substring(0, $FileName.Length - 4)
                         $ExpectedCsv = Join-Path $LocalPath "$BaseName.csv"
@@ -164,6 +170,8 @@ try {
 
                             if ($CsvItem) {
                                 Write-Log "Принудительное скачивание CSV: $($CsvItem.name) для VDF ${FileName}"
+                                # Скачиваем CSV безусловно (т.к. он нужен локально),
+                                # но статус обновится на 'downloaded' и в следующий раз он будет пропущен на шаге 2.
                                 Download-S3File -Item $CsvItem -Url $Url -UserAgent $UserAgent | Out-Null
                             } else {
                                 Write-Log "CSV файл для ${FileName} не найден в S3! Пропуск." "WARN"
@@ -178,13 +186,7 @@ try {
                         }
                     }
 
-                    # Стандартная проверка тега
-                    $DownloadStatus = if ($Item.tags -and $Item.tags.downloadStatus) { [string]$Item.tags.downloadStatus } else { $null }
-                    if ($DownloadStatus -eq "downloaded" -or $DownloadStatus -eq "downloading") {
-                        continue
-                    }
-
-                    # Скачиваем файл
+                    # Скачиваем основной файл
                     Download-S3File -Item $Item -Url $Url -UserAgent $UserAgent | Out-Null
                 }
             }
