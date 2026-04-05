@@ -1,8 +1,8 @@
 ﻿﻿param (
     [Parameter(Mandatory=$true)] [string]$S3Folder,
-    [Parameter(Mandatory=$false)] [string]$MonitorPath = '\\10.0.22.248\1c_exchange\BatchPassToPrint\tst',
-    [Parameter(Mandatory=$false)] [string]$FileMask = '*.json',
-    [Parameter(Mandatory=$false)] [int]$LoopDelaySeconds = 15
+    [Parameter(Mandatory=$true)] [string]$MonitorPath,
+    [Parameter(Mandatory=$true)] [string]$FileMask,
+    [Parameter(Mandatory=$true)] [int]$LoopDelaySeconds
 )
 
 # --- НАСТРОЙКИ ---
@@ -77,6 +77,7 @@ try {
                     $BaseName = $File.BaseName
                     $ProcessingFile = Join-Path $MonitorPath "$BaseName.processing"
                     $UploadedFile = Join-Path $MonitorPath "$BaseName.uploaded"
+                    $ErrorFile = Join-Path $MonitorPath "$BaseName.error"
 
                     try {
                         Rename-Item -Path $File.FullName -NewName "$BaseName.processing" -ErrorAction Stop
@@ -108,9 +109,15 @@ try {
                                 Invoke-RestMethod -Method Put -Uri $UploadUrl -InFile $ProcessingFile -ContentType "application/octet-stream" -Headers $S3Headers -UserAgent $UserAgent
                                 $Success = $true
                             } catch {
+                                # Проверка на 412 (уже есть в S3)
                                 if ($_.Exception.InnerException -and $_.Exception.InnerException.Response -and $_.Exception.InnerException.Response.StatusCode -eq 412) {
-                                    throw "Файл уже существует в S3 (412 Precondition Failed)"
+                                    Write-Log "Файл уже существует в S3 (412 Precondition Failed). Переименование в .error" "WARN"
+                                    if (Test-Path $ErrorFile) { Remove-Item $ErrorFile -Force }
+                                    Rename-Item -Path $ProcessingFile -NewName "$BaseName.error" -ErrorAction Stop
+                                    $Success = $true # Помечаем как "успех" чтобы выйти из цикла ретраев
+                                    continue # Переходим к следующему файлу в foreach
                                 }
+
                                 $RetryCount++
                                 $InnerMsg = ""
                                 if ($_.Exception.InnerException) { $InnerMsg = " | Inner: " + $_.Exception.InnerException.Message }
@@ -121,9 +128,12 @@ try {
 
                         if (-not $Success) { throw "Не удалось загрузить файл после $MaxRetries попыток." }
 
-                        if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
-                        Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction Stop
-                        Write-Log "Успешно загружено: $OriginalName (S3 Key: $($Response.key))"
+                        # Если файл все еще .processing (не был переименован в .error выше)
+                        if (Test-Path $ProcessingFile) {
+                            if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
+                            Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction Stop
+                            Write-Log "Успешно загружено: $OriginalName (S3 Key: $($Response.key))"
+                        }
 
                     } catch {
                         $ErrMsg = $_.Exception.Message
@@ -132,12 +142,7 @@ try {
 
                         if (Test-Path $ProcessingFile) {
                             try {
-                                if ($ErrMsg -like "*412*") {
-                                    if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
-                                    Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction SilentlyContinue
-                                } else {
-                                    Rename-Item -Path $ProcessingFile -NewName $OriginalName -ErrorAction SilentlyContinue
-                                }
+                                Rename-Item -Path $ProcessingFile -NewName $OriginalName -ErrorAction SilentlyContinue
                             } catch {}
                         }
                     }

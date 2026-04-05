@@ -1,8 +1,8 @@
 ﻿param (
     [Parameter(Mandatory=$true)] [string]$S3Folder,
     [Parameter(Mandatory=$true)] [string]$LocalPath,
-    [Parameter(Mandatory=$false)] [string[]]$FileMasks = @('*.csv', '*.vdf'),
-    [Parameter(Mandatory=$false)] [int]$LoopDelaySeconds = 15
+    [Parameter(Mandatory=$true)] [string[]]$FileMasks,
+    [Parameter(Mandatory=$true)] [int]$LoopDelaySeconds
 )
 
 # --- НАСТРОЙКИ ---
@@ -55,14 +55,17 @@ function Download-S3File($Item, $Url, $UserAgent) {
 
     Write-Log "Скачивание файла: ${FileName} (S3 Key: $S3Key)"
     try {
+        # 1. Установка статуса 'downloading'
         $BodySet = @{ set_tag = $S3Key; tag_key = "downloadStatus"; tag_value = "downloading" }
         Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
 
+        # 2. Получение ссылки
         $BodyDown = @{ download = $S3Key }
         $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
         $DownloadUrl = $DownloadResponse.download_url
         if (!$DownloadUrl) { throw "API не вернуло ссылку на скачивание." }
 
+        # 3. Физическое скачивание
         $MaxRetries = 3
         $RetryCount = 0
         $Success = $false
@@ -79,6 +82,7 @@ function Download-S3File($Item, $Url, $UserAgent) {
         }
         if (-not $Success) { throw "Не удалось скачать файл после $MaxRetries попыток." }
 
+        # 4. Установка статуса 'downloaded'
         $BodySetEnd = @{ set_tag = $S3Key; tag_key = "downloadStatus"; tag_value = "downloaded" }
         Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySetEnd | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
 
@@ -128,6 +132,7 @@ try {
         try {
             if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
 
+            # 1. Получаем список файлов из S3
             $Body = @{ list = "true"; folder = $S3Folder.Trim() }
             $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
 
@@ -177,6 +182,7 @@ try {
                                 if ($CsvItem) {
                                     Write-Log "VDF ${FileName} требует CSV. Принудительное скачивание CSV с UUID ${Uuid}: $($CsvItem.name)"
                                     Download-S3File -Item $CsvItem -Url $Url -UserAgent $UserAgent | Out-Null
+                                    # После скачивания CSV, статус локального файла изменился
                                 } else {
                                     Write-Log "CSV файл для UUID ${Uuid} (VDF ${FileName}) не найден в S3! Пропуск." "WARN"
                                     $MissingCsvUuidCache[$Uuid] = $true
