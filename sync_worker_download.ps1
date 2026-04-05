@@ -136,13 +136,20 @@ try {
             $RawItems = Invoke-RestMethod -Method Post -Uri $Url -Body ($Body | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
 
             if ($null -ne $RawItems) {
-                # Сортируем элементы по имени, чтобы CSV шли первыми
-                $Items = @($RawItems) | Sort-Object -Property name
+                # Оптимизация: Используем Hash Table для быстрого поиска
+                $S3ItemsMap = @{}
+                foreach ($item in $RawItems) { $S3ItemsMap[$item.name] = $item }
 
-                foreach ($Item in $Items) {
+                # Сортируем ключи, чтобы CSV шли первыми
+                $SortedKeys = $S3ItemsMap.Keys | Sort-Object
+
+                # Кеш отсутствующих CSV для текущей итерации (чтобы не логгировать многократно)
+                $MissingCsvCache = @{}
+
+                foreach ($S3Key in $SortedKeys) {
+                    $Item = $S3ItemsMap[$S3Key]
                     if ($Item.type -ne "file") { continue }
 
-                    $S3Key = $Item.name
                     $FileName = $S3Key.Split('/')[-1]
                     if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
@@ -160,26 +167,30 @@ try {
                     # 3. Логика зависимостей: VDF требует наличия локального CSV
                     if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
                         $BaseName = $FileName.Substring(0, $FileName.Length - 4)
-                        $ExpectedCsv = Join-Path $LocalPath "$BaseName.csv"
+                        $ExpectedCsvName = "$BaseName.csv"
+                        $ExpectedCsvPath = Join-Path $LocalPath $ExpectedCsvName
 
-                        if (-not (Test-Path $ExpectedCsv)) {
-                            Write-Log "VDF ${FileName} требует CSV. Ищем соответствующий CSV в списке S3..."
-                            # Пытаемся найти CSV в списке из S3
+                        if (-not (Test-Path $ExpectedCsvPath)) {
+                            if ($MissingCsvCache.ContainsKey($ExpectedCsvName)) {
+                                # Уже знаем, что CSV нет в S3 в этой итерации
+                                continue
+                            }
+
+                            # Пытаемся найти CSV в Hash Table
                             $CsvKey = $S3Key.Substring(0, $S3Key.Length - 4) + ".csv"
-                            $CsvItem = $Items | Where-Object { $_.name -eq $CsvKey }
+                            $CsvItem = $S3ItemsMap[$CsvKey]
 
                             if ($CsvItem) {
-                                Write-Log "Принудительное скачивание CSV: $($CsvItem.name) для VDF ${FileName}"
-                                # Скачиваем CSV безусловно (т.к. он нужен локально),
-                                # но статус обновится на 'downloaded' и в следующий раз он будет пропущен на шаге 2.
+                                Write-Log "VDF ${FileName} требует CSV. Принудительное скачивание: ${CsvKey}"
                                 Download-S3File -Item $CsvItem -Url $Url -UserAgent $UserAgent | Out-Null
                             } else {
                                 Write-Log "CSV файл для ${FileName} не найден в S3! Пропуск." "WARN"
+                                $MissingCsvCache[$ExpectedCsvName] = $true
                                 continue
                             }
 
                             # Проверяем снова
-                            if (-not (Test-Path $ExpectedCsv)) {
+                            if (-not (Test-Path $ExpectedCsvPath)) {
                                 Write-Log "Не удалось получить CSV для ${FileName}. Пропуск VDF." "WARN"
                                 continue
                             }

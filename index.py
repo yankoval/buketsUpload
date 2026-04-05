@@ -4,11 +4,19 @@ import json
 import uuid
 from botocore.config import Config
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 def datetime_handler(x):
     if isinstance(x, datetime):
         return x.isoformat()
     raise TypeError("Unknown type")
+
+def get_object_tags(s3_client, bucket, key):
+    try:
+        tagging = s3_client.get_object_tagging(Bucket=bucket, Key=key)
+        return key, {t['Key']: t['Value'] for t in tagging.get('TagSet', [])}
+    except Exception:
+        return key, {}
 
 def handler(event, context):
     s3_client = boto3.client(
@@ -29,13 +37,8 @@ def handler(event, context):
         'Access-Control-Expose-Headers': 'ETag'
     }
 
-    # Handle CORS preflight
     if event.get('httpMethod') == 'OPTIONS':
-        return {
-            'statusCode': 200,
-            'headers': headers,
-            'body': ''
-        }
+        return {'statusCode': 200, 'headers': headers, 'body': ''}
 
     if not bucket:
         return {
@@ -46,7 +49,6 @@ def handler(event, context):
 
     method = event.get('httpMethod', 'GET')
 
-    # Combine all parameters from query string and JSON body
     params = query_params.copy()
     if event.get('body'):
         try:
@@ -58,67 +60,54 @@ def handler(event, context):
             body = json.loads(body_str)
             if isinstance(body, dict):
                 params.update(body)
-        except Exception as e:
-            # Fallback or silent ignore
+        except Exception:
             pass
 
     try:
-        # Extract common parameters
         folder = params.get('folder', '')
         file_name = params.get('file_name')
-
-        # Normalize folder prefix:
-        # 1. Strip leading slashes and whitespace
-        # 2. Ensure trailing slash if not empty
         prefix = str(folder or '').strip().lstrip('/')
         if prefix and not prefix.endswith('/'):
             prefix += '/'
 
-        # 1. List files and subfolders (with pagination)
         is_list = str(params.get('list', '')).lower() in ('true', '1', 't', 'yes', 'y')
         if is_list:
             paginator = s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(
-                Bucket=bucket,
-                Prefix=prefix,
-                Delimiter='/'
-            )
+            page_iterator = paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter='/')
 
             items = []
             folders = set()
+            file_keys = []
 
             for page in page_iterator:
-                # Add subfolders (CommonPrefixes)
                 if 'CommonPrefixes' in page:
                     for cp in page['CommonPrefixes']:
                         folders.add(cp['Prefix'])
 
-                # Add files (Contents)
                 if 'Contents' in page:
                     for obj in page['Contents']:
                         if obj['Key'] == prefix:
                             continue
+                        file_keys.append(obj)
 
-                        # Fetch tags for each file
-                        tagging = s3_client.get_object_tagging(Bucket=bucket, Key=obj['Key'])
-                        tags = {t['Key']: t['Value'] for t in tagging.get('TagSet', [])}
+            # Parallel tag fetching
+            tags_map = {}
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [executor.submit(get_object_tags, s3_client, bucket, obj['Key']) for obj in file_keys]
+                for future in futures:
+                    key, tags = future.result()
+                    tags_map[key] = tags
 
-                        items.append({
-                            'name': obj['Key'],
-                            'type': 'file',
-                            'size': obj['Size'],
-                            'last_modified': obj['LastModified'],
-                            'tags': tags
-                        })
-
-            # Format final response including folders
-            final_items = []
-            for f in sorted(list(folders)):
-                final_items.append({
-                    'name': f,
-                    'type': 'folder'
+            for obj in file_keys:
+                items.append({
+                    'name': obj['Key'],
+                    'type': 'file',
+                    'size': obj['Size'],
+                    'last_modified': obj['LastModified'],
+                    'tags': tags_map.get(obj['Key'], {})
                 })
 
+            final_items = [{'name': f, 'type': 'folder'} for f in sorted(list(folders))]
             final_items.extend(items)
 
             return {
@@ -127,73 +116,35 @@ def handler(event, context):
                 'body': json.dumps(final_items, default=datetime_handler)
             }
 
-        # 2. Set/Update tag
         if 'set_tag' in params:
             key = params['set_tag']
             tag_key = params.get('tag_key')
             tag_value = params.get('tag_value')
-
             if not tag_key or tag_value is None:
-                return {
-                    'statusCode': 400,
-                    'headers': headers,
-                    'body': json.dumps({'error': "tag_key and tag_value parameters are required"})
-                }
+                return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': "tag_key and tag_value required"})}
 
             tagging = s3_client.get_object_tagging(Bucket=bucket, Key=key)
-            current_tags = tagging.get('TagSet', [])
-
-            # Remove if already exists to update
-            new_tag_set = [t for t in current_tags if t['Key'] != tag_key]
+            new_tag_set = [t for t in tagging.get('TagSet', []) if t['Key'] != tag_key]
             new_tag_set.append({'Key': tag_key, 'Value': str(tag_value)})
+            s3_client.put_object_tagging(Bucket=bucket, Key=key, Tagging={'TagSet': new_tag_set})
+            return {'statusCode': 200, 'headers': headers, 'body': json.dumps({'success': True})}
 
-            s3_client.put_object_tagging(
-                Bucket=bucket,
-                Key=key,
-                Tagging={'TagSet': new_tag_set}
-            )
-
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps({'success': True, 'message': f"Tag '{tag_key}' set to '{tag_value}' for '{key}'"})
-            }
-
-        # 3. Remove tag
         if 'remove_tag' in params:
             key = params['remove_tag']
             tag_to_remove = params.get('tag_key')
-
             if not tag_to_remove:
-                return {
-                    'statusCode': 400,
-                    'headers': headers,
-                    'body': json.dumps({'error': "tag_key parameter is required"})
-                }
+                return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': "tag_key required"})}
 
             tagging = s3_client.get_object_tagging(Bucket=bucket, Key=key)
-            current_tags = tagging.get('TagSet', [])
-            new_tag_set = [t for t in current_tags if t['Key'] != tag_to_remove]
+            new_tag_set = [t for t in tagging.get('TagSet', []) if t['Key'] != tag_to_remove]
+            s3_client.put_object_tagging(Bucket=bucket, Key=key, Tagging={'TagSet': new_tag_set})
+            return {'statusCode': 200, 'headers': headers, 'body': json.dumps({'success': True})}
 
-            s3_client.put_object_tagging(
-                Bucket=bucket,
-                Key=key,
-                Tagging={'TagSet': new_tag_set}
-            )
-
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps({'success': True, 'message': f"Tag '{tag_to_remove}' removed from '{key}'"})
-            }
-
-        # 4. Get download URL
         if 'download' in params:
             key = params['download']
             import urllib.parse
             filename = os.path.basename(key)
             encoded_filename = urllib.parse.quote(filename)
-
             url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={
@@ -203,63 +154,20 @@ def handler(event, context):
                 },
                 ExpiresIn=3600
             )
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps({'download_url': url})
-            }
+            return {'statusCode': 200, 'headers': headers, 'body': json.dumps({'download_url': url})}
 
-        # 5. Default: Generate upload URL (only for POST)
         if method == 'POST':
-            # Check folder existence if provided
             if prefix:
-                check_response = s3_client.list_objects_v2(
-                    Bucket=bucket,
-                    Prefix=prefix,
-                    MaxKeys=1
-                )
+                check_response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
                 if 'Contents' not in check_response and 'CommonPrefixes' not in check_response:
-                    return {
-                        'statusCode': 400,
-                        'headers': headers,
-                        'body': json.dumps({
-                            'error': f"Folder '{folder}' (normalized to '{prefix}') does not exist in bucket '{bucket}'. Upload denied.",
-                            'hint': "Ensure the folder exists and you have provided the correct name."
-                        })
-                    }
+                    return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': f"Folder '{folder}' not found"})}
 
-            # Determine final key
             final_file_name = str(file_name or uuid.uuid4()).strip().lstrip('/')
+            key = prefix + final_file_name if prefix and not final_file_name.startswith(prefix) else final_file_name
+            url = s3_client.generate_presigned_url('put_object', Params={'Bucket': bucket, 'Key': key, 'IfNoneMatch': '*'}, ExpiresIn=3600)
+            return {'statusCode': 200, 'headers': headers, 'body': json.dumps({'upload_url': url, 'key': key})}
 
-            # Prepend prefix if not already part of the filename
-            key = final_file_name
-            if prefix and not key.startswith(prefix):
-                key = prefix + key
-
-            url = s3_client.generate_presigned_url(
-                'put_object',
-                Params={
-                    'Bucket': bucket,
-                    'Key': key,
-                    'IfNoneMatch': '*'
-                },
-                ExpiresIn=3600
-            )
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps({'upload_url': url, 'key': key})
-            }
-
-        return {
-            'statusCode': 405,
-            'headers': headers,
-            'body': json.dumps({'error': f"Method {method} not allowed or parameters missing"})
-        }
+        return {'statusCode': 405, 'headers': headers, 'body': json.dumps({'error': "Method not allowed"})}
 
     except Exception as e:
-        return {
-            'statusCode': 500,
-            'headers': headers,
-            'body': json.dumps({'error': str(e)})
-        }
+        return {'statusCode': 500, 'headers': headers, 'body': json.dumps({'error': str(e)})}
