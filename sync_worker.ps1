@@ -18,8 +18,22 @@ $LockFile = Join-Path $MonitorPath "script.lock"
 $CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
 $CleanUrl = $CleanUrl.Trim()
 
-# Пропускать ошибки SSL и настраивать протоколы
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+# --- SSL & TLS CONFIGURATION ---
+# Используем C# для коллбэка SSL, чтобы избежать ошибки "No runspace" в многопоточных вызовах WebClient/WebRequest
+$CsharpCode = @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCertsPolicy {
+    public static bool Check(object sender, X509Certificate certificate, X509Chain chain, System.Net.Security.SslPolicyErrors sslPolicyErrors) {
+        return true;
+    }
+}
+"@
+if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
+    Add-Type -TypeDefinition $CsharpCode
+}
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [System.Net.Security.RemoteCertificateValidationCallback]::new([TrustAllCertsPolicy]::Check)
+
 [Net.SecurityProtocolType]$TlsProtocols = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
 [Net.ServicePointManager]::SecurityProtocol = $TlsProtocols
 
@@ -39,15 +53,12 @@ function Write-Log($Message, $Level = "INFO") {
 $LockStream = $null
 try {
     if (Test-Path $LockFile) {
-        # Пытаемся удалить. Если файл открыт другим процессом, это вызовет ошибку или файл останется на месте.
         Remove-Item $LockFile -ErrorAction SilentlyContinue
         if (Test-Path $LockFile) {
             Write-Log "Скрипт уже запущен (лок-файл $LockFile заблокирован другим процессом)." "WARN"
             exit
         }
     }
-
-    # Создаем/открываем файл и захватываем его монопольно (FileShare.None)
     $LockStream = [System.IO.File]::Open($LockFile, 'OpenOrCreate', 'Read', 'None')
 } catch {
     Write-Log "Не удалось захватить лок-файл: $($_.Exception.Message). Возможно, скрипт уже запущен." "WARN"
@@ -58,7 +69,6 @@ try {
     Write-Log "Старт мониторинга (цикл $LoopDelaySeconds сек). Целевая папка в S3: '$S3Folder'"
     $Url = [Uri]$CleanUrl
 
-    # Бесконечный цикл с защитой от краша
     while ($true) {
         try {
             $Files = Get-ChildItem -Path $MonitorPath -Filter $FileMask
@@ -71,18 +81,15 @@ try {
                     $UploadedFile = Join-Path $MonitorPath "$BaseName.uploaded"
 
                     try {
-                        # 1. Захват файла
                         Rename-Item -Path $File.FullName -NewName "$BaseName.processing" -ErrorAction Stop
                         Write-Log "Обработка: $OriginalName"
 
-                        # 2. Подготовка тела запроса
                         $Payload = @{
                             file_name = $OriginalName
                             folder    = $S3Folder.Trim()
                         }
                         $JsonBody = $Payload | ConvertTo-Json -Compress
 
-                        # 3. Запрос ссылки
                         Write-Log "Запрос ссылки загрузки для $OriginalName..."
                         $Response = Invoke-RestMethod -Method Post `
                                                      -Uri $Url `
@@ -92,7 +99,6 @@ try {
 
                         $UploadUrl = $Response.upload_url
 
-                        # 4. Загрузка в S3 с ретраями
                         $S3Headers = @{ "If-None-Match" = "*" }
 
                         $MaxRetries = 3
@@ -117,7 +123,6 @@ try {
 
                         if (-not $Success) { throw "Не удалось загрузить файл после $MaxRetries попыток." }
 
-                        # 5. Финализация
                         if (Test-Path $UploadedFile) { Remove-Item $UploadedFile -Force }
                         Rename-Item -Path $ProcessingFile -NewName "$BaseName.uploaded" -ErrorAction Stop
                         Write-Log "Успешно загружено: $OriginalName (S3 Key: $($Response.key))"

@@ -17,8 +17,22 @@ $LockFile = Join-Path $LocalPath "download_script.lock"
 $CleanUrl = $FunctionUrl -replace '[^\x20-\x7E]', ''
 $CleanUrl = $CleanUrl.Trim()
 
-# Пропускать ошибки SSL и настраивать протоколы
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+# --- SSL & TLS CONFIGURATION ---
+# Используем C# для коллбэка SSL, чтобы избежать ошибки "No runspace" в многопоточных вызовах WebClient/WebRequest
+$CsharpCode = @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCertsPolicy {
+    public static bool Check(object sender, X509Certificate certificate, X509Chain chain, System.Net.Security.SslPolicyErrors sslPolicyErrors) {
+        return true;
+    }
+}
+"@
+if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
+    Add-Type -TypeDefinition $CsharpCode
+}
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [System.Net.Security.RemoteCertificateValidationCallback]::new([TrustAllCertsPolicy]::Check)
+
 [Net.SecurityProtocolType]$TlsProtocols = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
 [Net.ServicePointManager]::SecurityProtocol = $TlsProtocols
 
@@ -56,10 +70,8 @@ try {
 
     while ($true) {
         try {
-            # Обеспечиваем наличие локальной папки
             if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
 
-            # 1. Получаем список файлов из S3
             $Body = @{
                 list = "true"
                 folder = $S3Folder.Trim()
@@ -75,28 +87,23 @@ try {
 
                     if ($Type -ne "file") { continue }
 
-                    # Получаем имя файла
                     $FileName = $S3Key.Split('/')[-1]
                     if ([string]::IsNullOrWhiteSpace($FileName)) { continue }
 
-                    # 2. Фильтр по маске
                     $Match = $false
                     foreach ($Mask in $FileMasks) {
                         if ($FileName -like $Mask) { $Match = $true; break }
                     }
                     if (-not $Match) { continue }
 
-                    # 2a. Логика зависимостей: VDF требует наличия локального CSV
                     if ($FileName.EndsWith(".vdf", [System.StringComparison]::OrdinalIgnoreCase)) {
                         $BaseName = $FileName.Substring(0, $FileName.Length - 4)
                         $ExpectedCsv = Join-Path $LocalPath "$BaseName.csv"
                         if (-not (Test-Path $ExpectedCsv)) {
-                            # CSV еще нет, пропускаем этот VDF до следующей итерации
                             continue
                         }
                     }
 
-                    # 3. Фильтр по тегам
                     $DownloadStatus = $null
                     if ($Item.tags -and $Item.tags.downloadStatus) {
                         $DownloadStatus = [string]$Item.tags.downloadStatus
@@ -109,7 +116,6 @@ try {
                     Write-Log "Найдено для скачивания: $FileName (S3 Key: $S3Key, Статус: $($DownloadStatus -or 'нет'))"
 
                     try {
-                        # 4. Устанавливаем статус 'downloading'
                         Write-Log "Установка статуса 'downloading' для $FileName..."
                         $BodySet = @{
                             set_tag = $S3Key
@@ -118,7 +124,6 @@ try {
                         }
                         Invoke-RestMethod -Method Post -Uri $Url -Body ($BodySet | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent | Out-Null
 
-                        # 5. Получаем ссылку на скачивание
                         Write-Log "Получение ссылки скачивания для $FileName..."
                         $BodyDown = @{ download = $S3Key }
                         $DownloadResponse = Invoke-RestMethod -Method Post -Uri $Url -Body ($BodyDown | ConvertTo-Json -Compress) -ContentType "application/json; charset=utf-8" -UserAgent $UserAgent
@@ -126,7 +131,6 @@ try {
 
                         if (!$DownloadUrl) { throw "API не вернуло ссылку на скачивание." }
 
-                        # 6. Скачиваем файл (Используем Invoke-WebRequest для большей стабильности)
                         $TargetFile = Join-Path $LocalPath $FileName
                         Write-Log "Скачивание файла в $TargetFile..."
 
@@ -151,7 +155,6 @@ try {
 
                         Write-Log "Успешно скачано: $FileName"
 
-                        # 7. Устанавливаем статус 'downloaded'
                         Write-Log "Установка статуса 'downloaded' для $FileName..."
                         $BodySetEnd = @{
                             set_tag = $S3Key
