@@ -2,7 +2,7 @@
     [Parameter(Mandatory=$true)] [string]$S3Folder,
     [Parameter(Mandatory=$true)] [string]$MonitorPath,
     [Parameter(Mandatory=$true)] [string]$FileMask,
-    [Parameter(Mandatory=$true)] [int]$LoopDelaySeconds
+    [Parameter(Mandatory=$false)] [int]$LoopDelaySeconds = 0
 )
 
 # --- НАСТРОЙКИ ---
@@ -64,10 +64,14 @@ try {
 }
 
 try {
-    Write-Log "Старт мониторинга (цикл $LoopDelaySeconds сек). Целевая папка в S3: '$S3Folder'"
+    if ($LoopDelaySeconds -gt 0) {
+        Write-Log "Старт мониторинга (цикл $LoopDelaySeconds сек). Целевая папка в S3: '$S3Folder'"
+    } else {
+        Write-Log "Однократный запуск. Целевая папка в S3: '$S3Folder'"
+    }
     $Url = [Uri]$CleanUrl
 
-    while ($true) {
+    do {
         try {
             $Files = Get-ChildItem -Path $MonitorPath -Filter $FileMask
 
@@ -154,8 +158,10 @@ try {
             Write-Log "Ошибка в основном цикле обработки: $ErrMsgMain" "ERROR"
         }
 
-        Start-Sleep -Seconds $LoopDelaySeconds
-    }
+        if ($LoopDelaySeconds -gt 0) {
+            Start-Sleep -Seconds $LoopDelaySeconds
+        }
+    } while ($LoopDelaySeconds -gt 0)
 
 } finally {
     if ($null -ne $LockStream) {
