@@ -138,9 +138,74 @@
         .filter-header h3 { margin: 0; }
         .clickable-tag { cursor: pointer; border: 1px solid transparent; transition: border 0.2s; }
         .clickable-tag:hover { border-color: #0288d1; }
+
+        .refresh-container {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+        }
+        .yin-yang-btn {
+            width: 100px;
+            height: 100px;
+            background: linear-gradient(to right, #a2d149 50%, #3e6b21 50%);
+            border-radius: 50%;
+            position: relative;
+            cursor: pointer;
+            border: 2px solid #3e6b21;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.6s ease, filter 0.3s ease;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        .yin-yang-btn:hover:not(:disabled) {
+            transform: rotate(180deg);
+        }
+        .yin-yang-btn:disabled {
+            cursor: not-allowed;
+            filter: grayscale(1) opacity(0.6);
+        }
+        .yin-yang-btn::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 25px;
+            width: 50px;
+            height: 50px;
+            background: radial-gradient(circle, #3e6b21 20%, #a2d149 21%);
+            border-radius: 50%;
+        }
+        .yin-yang-btn::after {
+            content: "";
+            position: absolute;
+            bottom: 0;
+            left: 25px;
+            width: 50px;
+            height: 50px;
+            background: radial-gradient(circle, #a2d149 20%, #3e6b21 21%);
+            border-radius: 50%;
+        }
+        .timer-display {
+            position: relative;
+            z-index: 10;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #fff;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8);
+            pointer-events: none;
+            user-select: none;
+        }
     </style>
 </head>
 <body>
+    <div class="refresh-container">
+        <button id="refresh-btn" class="yin-yang-btn" onclick="manualRefresh()">
+            <span id="refresh-timer" class="timer-display"></span>
+        </button>
+    </div>
+
     <h1>Bucket Browser</h1>
 
     <div class="upload-section">
@@ -191,6 +256,7 @@
         let nameFilter = '';
         let dateFilter = '';
         let sortConfig = { key: null, order: null }; // order: 'asc', 'desc', null
+        let refreshTimerInterval = null;
 
         let configLoaded = false;
         async function fetchConfig() {
@@ -216,6 +282,7 @@
 
         function loadSettings() {
             const folder = getCurrentFolder();
+            updateRefreshButtonUI();
 
             // Load Tags Filters
             const savedFilters = localStorage.getItem(`filters_${folder}`);
@@ -377,11 +444,54 @@
             breadcrumb.innerHTML = html;
         }
 
-        async function fetchItems() {
+        async function manualRefresh() {
+            const success = await fetchItems(true);
+            if (success) {
+                startTimer();
+            }
+        }
+
+        function startTimer() {
+            const folder = getCurrentFolder();
+            const endTime = Date.now() + 120000;
+            localStorage.setItem(`refreshTimer_${folder}`, endTime);
+            updateRefreshButtonUI();
+        }
+
+        function updateRefreshButtonUI() {
+            const folder = getCurrentFolder();
+            const btn = document.getElementById('refresh-btn');
+            const timerSpan = document.getElementById('refresh-timer');
+
+            if (refreshTimerInterval) clearInterval(refreshTimerInterval);
+
+            const update = () => {
+                const endTime = localStorage.getItem(`refreshTimer_${folder}`);
+                if (endTime) {
+                    const remaining = Math.ceil((parseInt(endTime) - Date.now()) / 1000);
+                    if (remaining > 0) {
+                        btn.disabled = true;
+                        timerSpan.textContent = remaining;
+                        return;
+                    }
+                }
+                btn.disabled = false;
+                timerSpan.textContent = '';
+                if (refreshTimerInterval) {
+                    clearInterval(refreshTimerInterval);
+                    refreshTimerInterval = null;
+                }
+            };
+
+            update();
+            refreshTimerInterval = setInterval(update, 1000);
+        }
+
+        async function fetchItems(isManual = false) {
             const currentFolder = getCurrentFolder();
             updateBreadcrumb(currentFolder);
             await fetchConfig();
-            loadSettings();
+            if (!isManual) loadSettings();
 
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
@@ -573,10 +683,12 @@
 
                 statusDiv.textContent = '';
                 table.style.display = 'table';
+                return true;
             } catch (error) {
                 console.error('Fetch error:', error);
                 statusDiv.className = 'error';
                 statusDiv.textContent = `Error loading items: ${error.message}`;
+                return false;
             }
         }
 
