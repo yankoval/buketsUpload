@@ -2,7 +2,7 @@
     [Parameter(Mandatory=$true)] [string]$S3Folder,
     [Parameter(Mandatory=$true)] [string]$LocalPath,
     [Parameter(Mandatory=$true)] [string[]]$FileMasks,
-    [Parameter(Mandatory=$true)] [int]$LoopDelaySeconds
+    [Parameter(Mandatory=$false)] [int]$LoopDelaySeconds = 0
 )
 
 # --- НАСТРОЙКИ ---
@@ -125,10 +125,14 @@ function Get-FileUuid($FileName) {
 }
 
 try {
-    Write-Log "Старт мониторинга S3 (цикл $LoopDelaySeconds сек). Папка: '$S3Folder'. Локальный путь: '$LocalPath'"
+    if ($LoopDelaySeconds -gt 0) {
+        Write-Log "Старт мониторинга S3 (цикл $LoopDelaySeconds сек). Папка: '$S3Folder'. Локальный путь: '$LocalPath'"
+    } else {
+        Write-Log "Однократный запуск S3. Папка: '$S3Folder'. Локальный путь: '$LocalPath'"
+    }
     $Url = [Uri]$CleanUrl
 
-    while ($true) {
+    do {
         try {
             if (!(Test-Path $LocalPath)) { New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null }
 
@@ -206,8 +210,10 @@ try {
             Write-Log "Ошибка в основном цикле скачивания: $($_.Exception.Message)" "ERROR"
         }
 
-        Start-Sleep -Seconds $LoopDelaySeconds
-    }
+        if ($LoopDelaySeconds -gt 0) {
+            Start-Sleep -Seconds $LoopDelaySeconds
+        }
+    } while ($LoopDelaySeconds -gt 0)
 
 } finally {
     if ($null -ne $LockStream) {
