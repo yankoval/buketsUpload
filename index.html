@@ -138,9 +138,39 @@
         .filter-header h3 { margin: 0; }
         .clickable-tag { cursor: pointer; border: 1px solid transparent; transition: border 0.2s; }
         .clickable-tag:hover { border-color: #0288d1; }
+        .signjs-widget-frame {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 1000;
+            width: 72px;
+            height: 72px;
+            border: 0;
+            border-radius: 50%;
+            background: transparent;
+            transition: width 0.2s ease, height 0.2s ease, border-radius 0.2s ease, box-shadow 0.2s ease;
+        }
+        .signjs-widget-frame[data-compact="false"] {
+            border-radius: 12px;
+            background: #f0f2f5;
+            box-shadow: 0 8px 28px rgba(0, 0, 0, 0.2);
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .signjs-widget-frame { transition: none; }
+        }
     </style>
 </head>
 <body>
+    <iframe
+        id="signjs-widget"
+        class="signjs-widget-frame"
+        src="cloud-sign.html?mode=embedded"
+        title="Обработчик электронной подписи"
+        width="72"
+        height="72"
+        data-compact="true"
+    ></iframe>
+
     <h1>Bucket Browser</h1>
 
     <div class="upload-section">
@@ -186,11 +216,39 @@
 
     <script>
         const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
+        const SIGNJS_LAYOUT_MESSAGE = 'signjs:layout';
         let allowedTags = ['error', 'finished'];
         let activeFilters = {}; // { key: [values] }
         let nameFilter = '';
         let dateFilter = '';
         let sortConfig = { key: null, order: null }; // order: 'asc', 'desc', null
+        let signJsLayout = { compact: true, width: 72, height: 72 };
+
+        function applySignJsLayout() {
+            const frame = document.getElementById('signjs-widget');
+            const viewportPadding = 32;
+            const maxWidth = Math.max(72, window.innerWidth - viewportPadding);
+            const maxHeight = Math.max(72, window.innerHeight - viewportPadding);
+            frame.style.width = `${Math.min(signJsLayout.width, maxWidth)}px`;
+            frame.style.height = `${Math.min(signJsLayout.height, maxHeight)}px`;
+            frame.dataset.compact = String(signJsLayout.compact);
+        }
+
+        window.addEventListener('message', event => {
+            const frame = document.getElementById('signjs-widget');
+            if (event.origin !== window.location.origin) return;
+            if (event.source !== frame.contentWindow) return;
+            if (event.data?.type !== SIGNJS_LAYOUT_MESSAGE) return;
+
+            const compact = event.data.compact === true;
+            signJsLayout = {
+                compact,
+                width: compact ? 72 : 760,
+                height: compact ? 72 : 900
+            };
+            applySignJsLayout();
+        });
+        window.addEventListener('resize', applySignJsLayout);
 
         let configLoaded = false;
         async function fetchConfig() {
