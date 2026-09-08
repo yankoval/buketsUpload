@@ -1,6 +1,6 @@
 {
   "name": "bukets-upload",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "scripts": {
     "check": "python3 -c \"import ast, pathlib; ast.parse(pathlib.Path('index.py').read_text())\" && node --test tests/*.test.js",
