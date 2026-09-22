@@ -5,11 +5,7 @@ permissions:
   contents: read  # Необходимо для actions/checkout
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - 'README.md'
+  # Production bukupl is deployed only by an explicit manual run.
   workflow_dispatch:
 
 env:

@@ -1,0 +1,4 @@
+{
+  "allowed_delete_tags": ["error", "processed"],
+  "hidden_folder_regex": "^[_.]"
+}

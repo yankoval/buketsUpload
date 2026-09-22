@@ -25,6 +25,12 @@
             try { this.cacheStorage?.removeItem(this.storageKey(folder)); } catch (_) { /* optional */ }
         }
 
+        persist(folder) {
+            try { this.cacheStorage?.setItem(this.storageKey(folder), JSON.stringify({
+                items: this.cache.get(folder), expires: this.deadlines.get(folder) || this.now() + this.remaining(folder) * 1000
+            })); } catch (_) { /* optional */ }
+        }
+
         remaining(folder) {
             let deadline = this.deadlines.get(folder) || 0;
             try {

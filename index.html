@@ -139,6 +139,14 @@
         .clickable-tag { cursor: pointer; border: 1px solid transparent; transition: border 0.2s; }
         .clickable-tag:hover { border-color: #0288d1; }
         .refresh-container { position: fixed; top: 16px; left: 16px; z-index: 900; }
+        #pagination { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
+        #page-label { flex-basis: 100%; text-align: center; color: #666; }
+        #page-numbers { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+        #pagination button { background: transparent; color: #1a73e8; border: 0; padding: 8px 10px; cursor: pointer; font: inherit; border-radius: 4px; }
+        #pagination button:hover:not(:disabled) { background: #eef4ff; text-decoration: underline; }
+        #pagination button[aria-current="page"] { color: #202124; font-weight: bold; background: #eef1f4; }
+        #pagination button:disabled:not([aria-current="page"]) { color: #aaa; cursor: default; }
+        #pagination button:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
         .yin-yang-btn {
             width: 72px; height: 72px; padding: 0; border-radius: 50%;
             border: 2px solid #3e6b21; background: #f5faee; color: #263d17;
@@ -147,16 +155,26 @@
         .yin-yang-btn svg { width: 64px; height: 64px; display: block; margin: auto; }
         .yin-yang-btn:disabled { cursor: default; }
         .yin-yang-btn[data-state="cooldown"] svg { opacity: .35; }
-        .yin-yang-btn[data-state="loading"] svg { animation: refresh-spin 1.5s linear infinite; }
+        .refresh-spinner { display: block; width: 64px; height: 64px; margin: auto;
+            transform-origin: 50% 50%; }
+        .yin-yang-btn[data-state="loading"] .refresh-spinner {
+            animation: refresh-spin 1.5s linear infinite; will-change: transform; }
         .yin-yang-btn[data-state="error"] { border-color: #b42318; }
         .yin-yang-btn:focus-visible { outline: 3px solid #0066cc; outline-offset: 3px; }
         .timer-display { position: absolute; inset: 0; display: grid; place-items: center;
             font: bold 18px sans-serif; pointer-events: none; }
-        @keyframes refresh-spin { to { transform: rotate(360deg); } }
+        @keyframes refresh-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @media (max-width: 1150px) { body { padding-top: 64px; } }
         @media (prefers-reduced-motion: reduce) {
-            .yin-yang-btn[data-state="loading"] svg { animation: none; }
+            .yin-yang-btn[data-state="loading"] .refresh-spinner { animation: none; }
         }
+        .signjs-health { position: fixed; right: 16px; top: 16px; z-index: 1001;
+            max-width: 250px; padding: 8px; border: 1px solid #999; border-radius: 12px;
+            background: #eee; color: #555; font: 12px sans-serif; }
+        .signjs-health-icon { display: inline-grid; place-items: center; width: 48px;
+            height: 48px; border-radius: 50%; background: #ccc; font-size: 28px; }
+        .signjs-health[hidden] { display: none; }
+        .signjs-widget-frame[data-health="loading"], .signjs-widget-frame[data-health="error"] { visibility: hidden; }
         .signjs-widget-frame {
             position: fixed;
             top: 16px;
@@ -183,14 +201,19 @@
     <div class="refresh-container">
         <button id="refresh-btn" class="yin-yang-btn" type="button" onclick="manualRefresh()"
             title="Обновить список файлов" aria-label="Обновить список файлов" data-state="ready">
-            <svg viewBox="0 0 100 100" aria-hidden="true">
+            <span class="refresh-spinner"><svg viewBox="0 0 100 100" aria-hidden="true">
                 <circle cx="50" cy="50" r="46" fill="#a2d149"/>
                 <path d="M50 4 A46 46 0 0 1 50 96 A23 23 0 0 1 50 50 A23 23 0 0 0 50 4" fill="#3e6b21"/>
                 <circle cx="50" cy="27" r="7" fill="#3e6b21"/>
                 <circle cx="50" cy="73" r="7" fill="#a2d149"/>
-            </svg>
+            </svg></span>
             <span id="refresh-timer" class="timer-display" aria-hidden="true"></span>
         </button>
+    </div>
+    <div id="signjs-health" class="signjs-health" role="status" aria-live="polite">
+        <span class="signjs-health-icon" aria-hidden="true">✍</span>
+        <span id="signjs-health-message">Загрузка модуля подписи…</span>
+        <button id="signjs-retry" type="button" hidden onclick="retrySignJs()">Повторить</button>
     </div>
     <iframe
         id="signjs-widget"
@@ -200,9 +223,16 @@
         width="72"
         height="72"
         data-compact="true"
+        data-health="loading"
     ></iframe>
 
     <h1>Bucket Browser</h1>
+    <details id="api-settings"><summary>Общие настройки API и SignJS</summary>
+        <label>URL API <input id="browser-api-url" type="url" size="65"></label>
+        <label>API key <input id="browser-api-key" type="password" autocomplete="off"></label>
+        <button onclick="saveBrowserAPI()">Сохранить и подключить</button>
+        <p>URL и ключ сохраняются в этом браузере и используются также модулем SignJS.</p>
+    </details>
 
     <div class="upload-section">
         <h3>Upload File</h3>
@@ -244,12 +274,80 @@
         </thead>
         <tbody id="file-list"></tbody>
     </table>
+    <nav id="pagination" aria-label="Страницы папки">
+        <span id="page-label">Страница 1</span>
+        <button id="page-prev" onclick="changePage(-1)" disabled>‹ Предыдущая</button>
+        <span id="page-numbers"></span>
+        <button id="page-next" onclick="changePage(1)" disabled>Следующая ›</button>
+    </nav>
 
-    <script src="refresh-controller.js?v=1.2.0"></script>
+    <script src="refresh-controller.js?v=1.3.0"></script>
     <script>
-        const API_URL = 'https://functions.yandexcloud.net/d4e54fnlggbipdrp6c19';
+        const API_URL = localStorage.getItem('ymq_gw_url') || '';
+        const API_KEY = localStorage.getItem('ymq_api_key') || '';
+        const BUCKET = '1bf11148-3595-4a07-a089-d460153b7c7a';
+        const PAGE_SIZE = 20;
+        let pageNumber = 0;
+        let availablePages = 1;
+        let capabilitiesPromise = null;
+        function ensureAPI() {
+            if (!capabilitiesPromise) capabilitiesPromise = apiCall('capabilities').then(data => {
+                if (data.apiVersion !== 2 || !data.actions?.includes('get-object-tagging')) throw new Error('Нужен единый API версии 2. Рабочая функция bukupl не поддерживает этот интерфейс.');
+            }).catch(error => { capabilitiesPromise = null; throw error; });
+            return capabilitiesPromise;
+        }
+        document.getElementById('browser-api-url').value = API_URL || 'https://d5d6kfk1rvhoeodarkrj.p8361f8z.apigw.yandexcloud.net';
+        document.getElementById('browser-api-key').value = API_KEY;
+        if (!API_URL || !API_KEY) document.getElementById('api-settings').open = true;
+        function saveBrowserAPI() {
+            const url = document.getElementById('browser-api-url').value.trim();
+            if (!/^https:\/\//i.test(url)) return alert('Укажите HTTPS URL API');
+            localStorage.setItem('ymq_gw_url', url);
+            localStorage.setItem('ymq_api_key', document.getElementById('browser-api-key').value.trim());
+            for (let i = sessionStorage.length - 1; i >= 0; i--) {
+                const key = sessionStorage.key(i);
+                if (key?.startsWith('bucketBrowser:refresh:')) sessionStorage.removeItem(key);
+            }
+            location.reload();
+        }
+        function changePage(step) {
+            goToPage(pageNumber + step);
+        }
+        function goToPage(number) {
+            pageNumber = Math.max(0, Math.min(number, availablePages - 1));
+            const items = refreshController.cached(getCurrentFolder());
+            if (items) renderItems(items, getCurrentFolder());
+        }
+        function renderPagination(count, loading = false) {
+            availablePages = Math.max(1, count);
+            const container = document.getElementById('page-numbers');
+            container.innerHTML = '';
+            const start = Math.max(0, Math.min(pageNumber - 4, availablePages - 10));
+            const end = Math.min(availablePages - 1, start + 9);
+            const numbers = [...new Set([0, ...Array.from({ length: end - start + 1 }, (_, i) => start + i), availablePages - 1])].sort((a, b) => a - b);
+            let previous = -1;
+            for (const number of numbers) {
+                if (number > previous + 1) {
+                    const dots = document.createElement('span');
+                    dots.textContent = '…';
+                    container.appendChild(dots);
+                }
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = String(number + 1);
+                button.setAttribute('aria-label', `Страница ${number + 1}`);
+                if (number === pageNumber) button.setAttribute('aria-current', 'page');
+                button.disabled = loading || number === pageNumber;
+                button.onclick = () => goToPage(number);
+                container.appendChild(button);
+                previous = number;
+            }
+            document.getElementById('page-prev').disabled = loading || pageNumber === 0;
+            document.getElementById('page-next').disabled = loading || pageNumber >= availablePages - 1;
+        }
         const SIGNJS_LAYOUT_MESSAGE = 'signjs:layout';
         let allowedTags = ['error', 'finished'];
+        let hiddenFolderRegex = /^[_.]/;
         let activeFilters = {}; // { key: [values] }
         let nameFilter = '';
         let dateFilter = '';
@@ -257,8 +355,62 @@
         let signJsLayout = { compact: true, width: 72, height: 72 };
         let listViewVersion = 0;
         const listErrors = new Map();
+        let renderGeneration = 0;
+        let tagAbort = null;
+        const visibleRows = new Map();
+        let tagsLoadingFolder = null;
+        let signJsWatchdog;
+        let signJsReady = false;
+        function logDiagnostic(message) {
+            console.warn(message);
+        }
+        function signJsFailed(reason) {
+            clearTimeout(signJsWatchdog);
+            signJsReady = false;
+            document.getElementById('signjs-widget').dataset.health = 'error';
+            document.getElementById('signjs-health').hidden = false;
+            document.getElementById('signjs-health-message').textContent = 'Модуль подписи не загрузился';
+            document.getElementById('signjs-retry').hidden = false;
+            logDiagnostic(`SignJS: ${reason}. Проверьте наличие cloud-sign.html, CloudSignApp.js, style.css и cadesplugin_api.js рядом с index.html.`);
+        }
+        function watchSignJs() {
+            clearTimeout(signJsWatchdog);
+            signJsReady = false;
+            document.getElementById('signjs-widget').dataset.health = 'loading';
+            document.getElementById('signjs-health').hidden = false;
+            document.getElementById('signjs-health-message').textContent = 'Загрузка модуля подписи…';
+            document.getElementById('signjs-retry').hidden = true;
+            signJsWatchdog = setTimeout(() => {
+                if (!signJsReady) signJsFailed('нет сообщения готовности в течение 12 секунд');
+            }, 12000);
+        }
+        function retrySignJs() {
+            watchSignJs();
+            document.getElementById('signjs-widget').src = `cloud-sign.html?mode=embedded&retry=${Date.now()}`;
+        }
+        document.getElementById('signjs-widget').onerror = () => signJsFailed('ошибка загрузки iframe');
+        watchSignJs();
+        async function apiCall(action, params = {}, signal) {
+            if (!API_URL || !API_KEY) throw new Error('Укажите общий URL API и ключ в настройках');
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            signal?.addEventListener('abort', abort, { once: true });
+            if (signal?.aborted) controller.abort();
+            const timeout = setTimeout(abort, 30000);
+            try {
+                const response = await fetch(API_URL, { method: 'POST', signal: controller.signal,
+                    headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
+                    body: JSON.stringify({ action, params }) });
+                const data = await response.json();
+                if (!response.ok) throw Object.assign(new Error(data.error || `HTTP error! status: ${response.status}`), { status: response.status });
+                return data;
+            } finally {
+                clearTimeout(timeout);
+                signal?.removeEventListener('abort', abort);
+            }
+        }
         const refreshController = new FolderRefreshController({
-            scope: `${location.pathname}:${API_URL}`,
+            scope: `v2:${location.pathname}:${API_URL}:${BUCKET}`,
             storage: { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) },
             cacheStorage: {
                 getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value),
@@ -266,19 +418,26 @@
             },
             onChange: updateRefreshButtonUI,
             fetchItems: async folder => {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 30000);
-                try {
-                    const response = await fetch(`${API_URL}?list=true&folder=${encodeURIComponent(folder)}`, { signal: controller.signal });
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                    return await response.json();
-                } finally { clearTimeout(timeout); }
+                const items = [];
+                let cursor = '';
+                do {
+                    const page = await apiCall('list-objects-v2', { Bucket: BUCKET, Prefix: folder,
+                        Delimiter: '/', MaxKeys: 500, ...(cursor ? { ContinuationToken: cursor } : {}) });
+                    if (!Array.isArray(page.Contents) && !Array.isArray(page.CommonPrefixes) && page.KeyCount !== 0) throw new Error('API не поддерживает постраничный список');
+                    items.push(...(page.CommonPrefixes || []).map(p => ({ name: p.Prefix, type: 'folder' })),
+                        ...(page.Contents || []).filter(o => o.Key !== folder).map(o => ({ name: o.Key,
+                            type: 'file', size: o.Size, last_modified: o.LastModified })));
+                    if (page.IsTruncated && (!page.NextContinuationToken || page.NextContinuationToken === cursor)) throw new Error('Invalid pagination cursor');
+                    cursor = page.IsTruncated ? page.NextContinuationToken : '';
+                } while (cursor);
+                return items;
             }
         });
 
         function updateRefreshButtonUI() {
             const folder = getCurrentFolder();
-            const { loading, remaining } = refreshController.state(folder);
+            const { loading: listing, remaining } = refreshController.state(folder);
+            const loading = listing || tagsLoadingFolder === folder;
             const button = document.getElementById('refresh-btn');
             button.disabled = loading || remaining > 0;
             button.dataset.state = loading ? 'loading' : listErrors.has(folder) ? 'error' : remaining > 0 ? 'cooldown' : 'ready';
@@ -292,6 +451,7 @@
 
         function manualRefresh() { return fetchItems({ manual: true }); }
         function renderCurrentItems() {
+            pageNumber = 0;
             const items = refreshController.cached(getCurrentFolder());
             if (items) renderItems(items, getCurrentFolder());
         }
@@ -304,6 +464,9 @@
         }
         setInterval(updateRefreshButtonUI, 1000);
         window.addEventListener('storage', updateRefreshButtonUI);
+        window.addEventListener('storage', event => {
+            if (['ymq_gw_url', 'ymq_api_key'].includes(event.key)) location.reload();
+        });
 
         function applySignJsLayout() {
             const frame = document.getElementById('signjs-widget');
@@ -321,6 +484,11 @@
             if (event.source !== frame.contentWindow) return;
             if (event.data?.type !== SIGNJS_LAYOUT_MESSAGE) return;
 
+            clearTimeout(signJsWatchdog);
+            signJsReady = true;
+            frame.dataset.health = 'ready';
+            document.getElementById('signjs-health').hidden = true;
+
             const compact = event.data.compact === true;
             signJsLayout = {
                 compact,
@@ -335,17 +503,22 @@
         async function fetchConfig() {
             if (configLoaded) return;
             try {
-                const response = await fetch(`${API_URL}?download=config/UI-conf.json`);
-                if (!response.ok) return;
-                const data = await response.json();
-                if (data.download_url) {
-                    const configResponse = await fetch(data.download_url);
+                const data = await apiCall('get-download-url', { Bucket: BUCKET, Key: 'config/UI-conf.json' });
+                if (data.url) {
+                    const configResponse = await fetch(data.url);
                     if (configResponse.ok) {
                         const configData = await configResponse.json();
                         if (configData && Array.isArray(configData.allowed_delete_tags)) {
                             allowedTags = configData.allowed_delete_tags;
-                            configLoaded = true;
                         }
+                        if (typeof configData?.hidden_folder_regex === 'string') {
+                            try {
+                                hiddenFolderRegex = configData.hidden_folder_regex ? new RegExp(configData.hidden_folder_regex) : null;
+                            } catch (_) {
+                                console.warn('UI-conf.json: некорректный hidden_folder_regex; используется ^[_.]');
+                            }
+                        }
+                        configLoaded = true;
                     }
                 }
             } catch (e) {
@@ -453,7 +626,7 @@
                 activeFilters[key].forEach(val => {
                     const chip = document.createElement('div');
                     chip.className = 'filter-chip';
-                    chip.innerHTML = `<strong>${key}:</strong> ${val}`;
+                    chip.textContent = `${key}: ${val}`;
 
                     const btn = document.createElement('button');
                     btn.className = 'remove-filter-btn';
@@ -510,13 +683,18 @@
                 let path = '';
                 parts.forEach((part, index) => {
                     path += part + '/';
-                    html += ` / <a href="#folder=${encodeURIComponent(path)}">${part}</a>`;
+                    const safePart = part.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+                    html += ` / <a href="#folder=${encodeURIComponent(path)}">${safePart}</a>`;
                 });
             }
             breadcrumb.innerHTML = html;
         }
 
         async function fetchItems(options = {}) {
+            pageNumber = 0;
+            tagAbort?.abort();
+            tagsLoadingFolder = null;
+            ++renderGeneration;
             const currentFolder = getCurrentFolder();
             const viewVersion = ++listViewVersion;
             updateBreadcrumb(currentFolder);
@@ -528,6 +706,8 @@
             statusDiv.textContent = 'Loading items...';
             if (!refreshController.cached(currentFolder)) table.style.display = 'none';
             try {
+                await ensureAPI();
+                await fetchConfig();
                 const items = await refreshController.load(currentFolder, options);
                 if (viewVersion !== listViewVersion || currentFolder !== getCurrentFolder()) return;
                 if (items) renderItems(items, currentFolder);
@@ -540,14 +720,16 @@
             } finally { updateRefreshButtonUI(); }
         }
 
-        function renderItems(sourceItems, currentFolder) {
+        function renderItems(sourceItems, currentFolder, targetRow = null) {
             const statusDiv = document.getElementById('status');
             const table = document.getElementById('file-table');
             const tbody = document.getElementById('file-list');
-            let items = [...sourceItems];
+            let items = sourceItems.filter(item => item.type !== 'folder' || !hiddenFolderRegex ||
+                !hiddenFolderRegex.test(item.name.slice(currentFolder.length).split('/')[0]));
+            const visibleTotal = items.length;
                 // Apply Tag Filters
                 const filterKeys = Object.keys(activeFilters);
-                if (filterKeys.length > 0) {
+                if (targetRow && filterKeys.length > 0) {
                     items = items.filter(item => {
                         if (item.type !== 'file') return true;
                         if (!item.tags) return false;
@@ -611,10 +793,22 @@
                     });
                 }
 
-                tbody.innerHTML = '';
+                if (!targetRow) {
+                    tagAbort?.abort();
+                    tagsLoadingFolder = null;
+                    tagAbort = new AbortController();
+                    ++renderGeneration;
+                    visibleRows.clear();
+                    tbody.innerHTML = '';
+                    document.getElementById('page-label').textContent = `Всего объектов: ${visibleTotal} · Страница ${pageNumber + 1}`;
+                    renderPagination(Object.keys(activeFilters).length ? pageNumber + 1 : Math.ceil(items.length / PAGE_SIZE), items.length > 0);
+                } else if (!items.length) {
+                    targetRow.style.display = 'none';
+                    return;
+                }
 
                 // Handle Parent directory if not in root
-                if (currentFolder) {
+                if (currentFolder && !targetRow) {
                     const parentFolder = currentFolder.split('/').filter(p => p).slice(0, -1).join('/') + (currentFolder.includes('/') && currentFolder.split('/').filter(p => p).length > 1 ? '/' : '');
                     const row = document.createElement('tr');
                     row.innerHTML = `
@@ -629,23 +823,39 @@
 
                 if (items.length === 0 && !currentFolder) {
                     statusDiv.className = '';
-                    statusDiv.textContent = 'Bucket is empty.';
+                    statusDiv.textContent = '';
                     table.style.display = 'none';
                     return;
                 }
 
                 items.forEach(item => {
-                    const row = document.createElement('tr');
+                    const row = targetRow || document.createElement('tr');
+                    row.innerHTML = '';
+                    row.style.display = '';
+                    visibleRows.set(item.name, row);
+                    if (!targetRow && item.type === 'file') {
+                        row.style.display = 'none';
+                        tbody.appendChild(row);
+                        return;
+                    }
 
                     const nameCell = document.createElement('td');
                     if (item.type === 'folder') {
                         const link = document.createElement('a');
                         link.className = 'folder-link';
                         link.href = `#folder=${encodeURIComponent(item.name)}`;
-                        link.innerHTML = `<span class="icon">📁</span>${item.name.replace(currentFolder, '')}`;
+                        link.textContent = `📁${item.name.replace(currentFolder, '')}`;
                         nameCell.appendChild(link);
                     } else {
-                        nameCell.innerHTML = `<span class="icon">📄</span>${item.name.replace(currentFolder, '')}`;
+                        const link = document.createElement('a');
+                        link.textContent = `📄${item.name.replace(currentFolder, '')}`;
+                        if (/\.(json|txt|bmp|png|jpe?g)$/i.test(item.name)) {
+                            link.href = '#';
+                            link.onclick = event => { event.preventDefault(); previewFile(item.name); };
+                            link.rel = 'noopener noreferrer';
+                            link.title = 'Просмотреть содержимое';
+                        }
+                        nameCell.appendChild(link);
                     }
 
                     const sizeCell = document.createElement('td');
@@ -713,36 +923,142 @@
                     row.appendChild(dateCell);
                     row.appendChild(tagsCell);
                     row.appendChild(actionCell);
-                    tbody.appendChild(row);
+                    if (!targetRow) {
+                        tbody.appendChild(row);
+                        row.style.display = 'none';
+                    }
                 });
 
+                if (targetRow) return;
                 statusDiv.textContent = '';
                 statusDiv.className = '';
                 table.style.display = 'table';
+                hydrateRows(items, currentFolder, renderGeneration, tagAbort.signal);
+        }
+
+        async function hydrateRows(items, folder, generation, signal) {
+            tagsLoadingFolder = folder;
+            updateRefreshButtonUI();
+            let completed = 0, errors = 0, matched = 0, shown = 0;
+            const start = pageNumber * PAGE_SIZE;
+            const hasTagFilters = Object.keys(activeFilters).length > 0;
+            for (const item of items) {
+                if (generation !== renderGeneration || signal.aborted) return;
+                // Metadata already determines the page when there are no tag filters.
+                if (!hasTagFilters && completed < start) { completed++; matched++; continue; }
+                const revision = item.tagRevision || 0;
+                try {
+                    if (item.type === 'file' && !item.tags) {
+                        const data = await apiCall('get-object-tagging', { Bucket: BUCKET, Key: item.name }, signal);
+                        if (!Array.isArray(data.TagSet)) throw new Error('Invalid tags response');
+                        if (generation !== renderGeneration || signal.aborted) return;
+                        if ((item.tagRevision || 0) === revision) item.tags = Object.fromEntries(data.TagSet.map(t => [t.Key, t.Value]));
+                    }
+                    const matches = item.type === 'folder' || Object.keys(activeFilters).every(k => activeFilters[k].includes(item.tags?.[k]));
+                    if (matches && matched++ >= start) {
+                        renderItems([item], folder, visibleRows.get(item.name));
+                        shown++;
+                    }
+                } catch (error) {
+                    if (generation !== renderGeneration || signal.aborted) return;
+                    if ((item.tagRevision || 0) === revision) {
+                        errors++;
+                        if (matched++ >= start) { showTagError(folder, item.name); shown++; }
+                    }
+                    if ([401, 403].includes(error.status)) {
+                        logDiagnostic('Чтение тегов остановлено: API отказал в доступе. Проверьте ключ и разрешения.');
+                        completed = items.length;
+                        break;
+                    }
+                }
+                completed++;
+                if (shown >= PAGE_SIZE) break;
+            }
+            refreshController.persist(folder);
+            if (generation === renderGeneration) {
+                tagsLoadingFolder = null;
+                renderPagination(hasTagFilters ? pageNumber + 1 + (completed < items.length ? 1 : 0) : Math.ceil(items.length / PAGE_SIZE));
+                updateRefreshButtonUI();
+            }
+        }
+
+        function showTagError(folder, filename) {
+            const row = visibleRows.get(filename);
+            if (getCurrentFolder() !== folder || !row) return;
+            row.innerHTML = '';
+            const cell = document.createElement('td');
+            cell.colSpan = 5;
+            cell.textContent = `${filename}: теги не загружены, фильтр по тегам не проверен. `;
+            const retry = document.createElement('button');
+            retry.textContent = 'Повторить';
+            retry.onclick = () => {
+                retry.disabled = true;
+                refreshObjectTags(folder, filename).catch(() => {});
+            };
+            cell.appendChild(retry);
+            row.appendChild(cell);
+            row.style.display = '';
+        }
+
+        async function refreshObjectTags(folder, filename) {
+            const item = refreshController.cached(folder)?.find(item => item.name === filename);
+            if (!item) return;
+            const revision = (item.tagRevision || 0) + 1;
+            item.tagRevision = revision;
+            delete item.tags;
+            refreshController.persist(folder);
+            try {
+                const data = await apiCall('get-object-tagging', { Bucket: BUCKET, Key: filename });
+                if (!Array.isArray(data.TagSet)) throw new Error('Invalid tags response');
+                if (item.tagRevision !== revision || !refreshController.cached(folder)?.includes(item)) return;
+                item.tags = Object.fromEntries(data.TagSet.map(t => [t.Key, t.Value]));
+                refreshController.persist(folder);
+                const row = visibleRows.get(filename);
+                if (getCurrentFolder() === folder && row) renderItems([item], folder, row);
+            } catch (error) {
+                if (item.tagRevision === revision) showTagError(folder, filename);
+                throw error;
+            }
+        }
+
+        function applyTagResult(folder, filename, result) {
+            const item = refreshController.cached(folder)?.find(i => i.name === filename);
+            if (!item) return;
+            item.tagRevision = (item.tagRevision || 0) + 1;
+            item.tags = Object.fromEntries(result.TagSet.map(t => [t.Key, t.Value]));
+            refreshController.persist(folder);
+            const row = visibleRows.get(filename);
+            if (getCurrentFolder() === folder && row) renderItems([item], folder, row);
+        }
+        async function previewFile(filename) {
+            const tab = window.open('about:blank', '_blank');
+            if (!tab) return alert('Разрешите открытие новой вкладки для просмотра');
+            tab.opener = null;
+            try {
+                const result = await apiCall('get-preview-url', { Bucket: BUCKET, Key: filename });
+                tab.location.href = result.url;
+            } catch (error) { tab.close(); alert(error.message); }
         }
 
         async function downloadFile(filename) {
             const folderAtDownload = getCurrentFolder();
             try {
-                const response = await fetch(`${API_URL}?download=${encodeURIComponent(filename)}`);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-                const data = await response.json();
-                if (data.download_url) {
-                    // Option 1: Trigger download and set tag immediately
-                    window.location.href = data.download_url;
-
-                    // Set downloadStatus: downloaded
-                    const tagUrl = `${API_URL}?set_tag=${encodeURIComponent(filename)}&tag_key=downloadStatus&tag_value=downloaded`;
-                    fetch(tagUrl, { method: 'POST' }).then(r => {
-                        if (r.ok) return refreshAfterMutation(folderAtDownload);
-                    }).catch(e => console.error("Failed to set downloadStatus tag", e));
-                } else {
-                    alert('Could not get download URL');
-                }
+                const data = await apiCall('get-download-url', { Bucket: BUCKET, Key: filename });
+                if (!data.url) throw new Error('API не вернул ссылку на скачивание');
+                window.location.href = data.url;
             } catch (error) {
                 console.error('Download error:', error);
-                alert(`Error initiating download: ${error.message}`);
+                alert(`Не удалось начать скачивание: ${error.message}`);
+                return;
+            }
+            // The browser starts downloading independently; a tag failure is not a download failure.
+            try {
+                const result = await apiCall('set-object-tag', { Bucket: BUCKET, Key: filename, TagKey: 'downloadStatus', TagValue: 'downloaded' });
+                if (!result.success) throw new Error(result.error || 'API не подтвердил сохранение тега');
+                applyTagResult(folderAtDownload, filename, result);
+            } catch (error) {
+                console.warn('Скачивание запущено, но тег downloadStatus не сохранён:', error);
+                alert(`Скачивание запущено, но отметка downloadStatus не сохранена: ${error.message}`);
             }
         }
 
@@ -751,13 +1067,9 @@
             if (!confirm(`Are you sure you want to remove tag "${tagKey}" from ${filename}?`)) return;
 
             try {
-                const url = `${API_URL}?remove_tag=${encodeURIComponent(filename)}&tag_key=${encodeURIComponent(tagKey)}`;
-                const response = await fetch(url, { method: 'POST' });
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-                const result = await response.json();
+                const result = await apiCall('remove-object-tag', { Bucket: BUCKET, Key: filename, TagKey: tagKey });
                 if (result.success) {
-                    await refreshAfterMutation(folderAtChange);
+                    applyTagResult(folderAtChange, filename, result);
                 } else {
                     alert('Failed to remove tag: ' + result.error);
                 }
@@ -775,13 +1087,9 @@
             if (tagValue === null) return;
 
             try {
-                const url = `${API_URL}?set_tag=${encodeURIComponent(filename)}&tag_key=${encodeURIComponent(tagKey)}&tag_value=${encodeURIComponent(tagValue)}`;
-                const response = await fetch(url, { method: 'POST' });
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-                const result = await response.json();
+                const result = await apiCall('set-object-tag', { Bucket: BUCKET, Key: filename, TagKey: tagKey, TagValue: tagValue });
                 if (result.success) {
-                    await refreshAfterMutation(folderAtChange);
+                    applyTagResult(folderAtChange, filename, result);
                 } else {
                     alert('Failed to set tag: ' + result.error);
                 }
@@ -808,20 +1116,7 @@
             uploadBtn.disabled = true;
 
             try {
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        folder: currentFolder,
-                        file_name: file.name
-                    })
-                });
-
-                if (!response.ok) {
-                    const errData = await response.json();
-                    throw new Error(errData.error || `HTTP error! status: ${response.status}`);
-                }
-
-                const { upload_url } = await response.json();
+                const { url: upload_url } = await apiCall('get-upload-url', { Bucket: BUCKET, Key: currentFolder + file.name });
 
                 statusDiv.textContent = 'Uploading...';
                 const uploadResponse = await fetch(upload_url, {
@@ -862,7 +1157,6 @@
         }
 
         window.onhashchange = () => fetchItems();
-        fetchConfig().then(renderCurrentItems);
         fetchItems();
     </script>
 </body>
